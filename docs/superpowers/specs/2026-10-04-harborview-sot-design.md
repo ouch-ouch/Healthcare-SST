@@ -81,7 +81,7 @@ Precedence only applies where two sources disagree on a single fact that must re
 | Facility assignment | Cross-check HR `facility`, Payroll `facility_code`, and the Schedule page's facility. Unresolved → hard block per §5, no precedence, HITL required. |
 | License number | Treated as a natural unique key (§3) — collisions are a sanity violation, not a precedence question. |
 | License validity gate | **No precedence, no leniency once triggered** — once the soonest expiration date is past, the employee is blocked, full stop; no source can override it. |
-| Canonical display name | **Assumption, not yet confirmed**: HR roster's name wins, since it's the identity-originating source (§3). Flagged in §15 for explicit sign-off. |
+| Canonical display name | **HR roster's name is canonical**, always — it's the identity-originating source (§3). This is the default stored value, independent of corroboration: a Stage 1 corroboration mismatch against the License's `name_on_license` still raises its own `identity_ambiguity` flag (§3, §9) for human review, it just doesn't block HR's name from being the one stored on the entity. |
 
 ## 8. The two fronts: SST approval vs. Payroll approval
 
@@ -138,7 +138,3 @@ Per-fixture self-checks, not a test framework: one fixture set per source file c
 | Kafka / event streaming | Solves continuous multi-consumer streams; this is batch file ingestion with a review queue, which a DB table already gives. |
 | Rules DSL / no-code rule editor | More code than the problem needs today; a typed list of rule objects is simpler to write, read, and test. |
 | Timezone-aware conversion | No multi-timezone facility implied by the brief; single-timezone 24h conversion is sufficient. |
-
-## 15. Open item for sign-off
-
-Self-review caught one precedence question that was never explicitly settled in discussion: when HR, the License registry, and Payroll format an employee's name differently, which one is the canonical display name stored on the Employee entity? §7 currently defaults to "HR wins" (consistent with HR being the identity-originating source), but this was an assumption filled in during spec-writing, not a confirmed decision — flagging it rather than burying it.
