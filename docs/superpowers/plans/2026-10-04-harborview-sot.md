@@ -39,7 +39,7 @@
 - Test: `tests/test_graph.py`
 
 **Interfaces:**
-- Produces: `db.init_db(path: str) -> sqlite3.Connection`
+- Produces: `db.init_db(path: str) -> sqlite3.Connection` — creates the schema, then seeds the two known `Facility` entities (`{"name": "Harborview Bayside"}`, `{"name": "Harborview Riverdale"}`) if they don't already exist (checked via `find_entity`, so re-running `init_db` on an existing DB file is a no-op here). These two facilities are fixed context from the brief, not something discovered from an ingested file — no adapter creates `Facility` entities.
 - Produces: `graph.Entity` (dataclass: `id: str`, `type: str`, `attrs: dict`)
 - Produces: `graph.create_entity(conn, type: str, attrs: dict) -> str`
 - Produces: `graph.get_entity(conn, entity_id: str) -> Entity | None`
@@ -82,9 +82,22 @@ def test_remove_edge(conn):
     create_edge(conn, emp, lic, "holds_license")
     remove_edge(conn, emp, lic, "holds_license")
     assert neighbors(conn, emp, "holds_license") == []
+
+def test_init_db_seeds_known_facilities(conn):
+    bayside = find_entity(conn, "Facility", name="Harborview Bayside")
+    riverdale = find_entity(conn, "Facility", name="Harborview Riverdale")
+    assert bayside is not None and riverdale is not None
+
+def test_init_db_is_idempotent_on_facilities(tmp_path):
+    path = str(tmp_path / "test.db")
+    init_db(path)
+    init_db(path)  # second call on the same file must not duplicate
+    conn = init_db(path)
+    all_facilities = [e for e in all_entities_of_type(conn, "Facility")]
+    assert len(all_facilities) == 2
 ```
 
-A `conn` pytest fixture in `tests/conftest.py` calls `init_db(":memory:")`.
+A `conn` pytest fixture in `tests/conftest.py` calls `init_db(":memory:")`. `tests/conftest.py` also defines `all_entities_of_type(conn, type: str) -> list[Entity]` (`SELECT * FROM entities WHERE type = ?`), a test-only helper reused by every later task's tests.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -93,7 +106,7 @@ Expected: FAIL (module `sot.graph` not found / functions undefined)
 
 - [ ] **Step 3: Implement `sot/db.py` and `sot/graph.py`**
 
-`init_db` creates three tables if absent: `entities(id TEXT PRIMARY KEY, type TEXT, attrs TEXT, created_at TEXT, updated_at TEXT)`, `edges(from_id TEXT, to_id TEXT, type TEXT, attrs TEXT, created_at TEXT)`, and the `flags` table from Task 2 (create it here too, since both tables are schema, not logic — Task 2 only adds the Python helpers around it). `attrs` is a JSON-serialized `TEXT` column (SQLite has no native JSONB; this is the direct SQLite equivalent of the spec's `attrs JSONB`, and the schema shape is unchanged if ported to Postgres later). `id` values are `str(uuid.uuid4())`. `find_entity` filters by loading candidates of the given `type` and comparing decoded `attrs` in Python (no JSON path querying needed at this data volume).
+`init_db` creates three tables if absent: `entities(id TEXT PRIMARY KEY, type TEXT, attrs TEXT, created_at TEXT, updated_at TEXT)`, `edges(from_id TEXT, to_id TEXT, type TEXT, attrs TEXT, created_at TEXT)`, and the `flags` table from Task 2 (create it here too, since both tables are schema, not logic — Task 2 only adds the Python helpers around it). `attrs` is a JSON-serialized `TEXT` column (SQLite has no native JSONB; this is the direct SQLite equivalent of the spec's `attrs JSONB`, and the schema shape is unchanged if ported to Postgres later). `id` values are `str(uuid.uuid4())`. `find_entity` filters by loading candidates of the given `type` and comparing decoded `attrs` in Python (no JSON path querying needed at this data volume). After creating tables, `init_db` seeds the two `Facility` entities described in the Interfaces block, guarded by a `find_entity` check so a second call against the same file doesn't duplicate them.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -506,17 +519,17 @@ git commit -m "feat: add Payroll adapter (attach-only facts)"
 - Consumes: `graph.find_entity`, `graph.create_entity` (Task 1); `flags.create_flag` (Task 2)
 - Produces: `schedule.PageTable` (dataclass: `facility_name: str | None`, `rows: list[dict]`, `raw_text: str`)
 - Produces: `schedule.extract_pages(pdf_path: str) -> list[PageTable]` — one `PageTable` per PDF page, `facility_name` is the matched Facility name found in the page text or `None` if none resolves.
-- Produces: `schedule.store_schedule_batch(conn, page: PageTable) -> None` — if `page.facility_name` resolves to a known `Facility` entity (via `find_entity(conn, "Facility", name=...)`), stores each row as a `ShiftAssignment` entity with `attrs["facility_id"]` set and `attrs["batch_status"] = "linked"`; if it does not resolve, still stores each row as a `ShiftAssignment` entity (raw capture, per Global Constraints) but with `attrs["batch_status"] = "held"` and raises one `identity_ambiguity`-adjacent flag — use `data_source_anomaly` with a reason naming the unresolved facility text, since this is a sanity-stage problem with the page itself, not a cross-source conflict — on the first row of that page (one flag per held page, not one per row, to avoid flooding the review queue with duplicates of the same underlying problem).
+- Produces: `schedule.store_schedule_batch(conn, page: PageTable) -> None` — each row in `page.rows` is a dict with keys exactly matching the PDF's own headers for the row's identity (`"Staff"`, `"Role"`) and day columns (`"Mon 09/14"`, `"Tue 09/15"`, etc., one key per day column present on the page). This is stored as a `ShiftAssignment` entity with `attrs = {"staff_name": row["Staff"], "role": row["Role"], "shifts": {<day header>: <raw cell text, e.g. "7a-3p" or "OFF">, ...}, "facility_id": <Facility entity id or None>, "batch_status": "linked" | "held"}`. If `page.facility_name` resolves to a known `Facility` entity (via `find_entity(conn, "Facility", name=...)`), `facility_id` is set and `batch_status = "linked"`; if it does not resolve, `facility_id` is `None`, `batch_status = "held"`, and one `data_source_anomaly` flag is raised (reason naming the unresolved facility text) — on the *page's first row only*, not per row, so a held page produces one flag, not one per staff member.
 
 - [ ] **Step 1: Write failing tests**
 
 ```python
-def test_extract_pages_finds_known_facility(conn, seeded_facilities):
+def test_extract_pages_finds_known_facility(conn):
     pages = extract_pages("tests/fixtures/schedule_sample.pdf")
     assert pages[0].facility_name == "Harborview Bayside"
     assert len(pages[0].rows) > 0
 
-def test_unresolvable_facility_holds_batch(conn, seeded_facilities):
+def test_unresolvable_facility_holds_batch(conn):
     pages = extract_pages("tests/fixtures/schedule_unknown_facility.pdf")
     store_schedule_batch(conn, pages[0])
     shifts = [e for e in all_entities_of_type(conn, "ShiftAssignment")]
@@ -525,14 +538,14 @@ def test_unresolvable_facility_holds_batch(conn, seeded_facilities):
     anomaly_flags = [f for fs in grouped.values() for f in fs if f.flag_type == "data_source_anomaly"]
     assert len(anomaly_flags) == 1  # one flag for the whole page, not per row
 
-def test_known_facility_links_batch(conn, seeded_facilities):
+def test_known_facility_links_batch(conn):
     pages = extract_pages("tests/fixtures/schedule_sample.pdf")
     store_schedule_batch(conn, pages[0])
     shifts = [e for e in all_entities_of_type(conn, "ShiftAssignment")]
     assert all(s.attrs["batch_status"] == "linked" for s in shifts)
 ```
 
-`seeded_facilities` is a `conftest.py` fixture that creates `Facility` entities for "Harborview Bayside" and "Harborview Riverdale" before the test body runs. `all_entities_of_type` is a small test-only helper added to `tests/conftest.py` (`SELECT * FROM entities WHERE type = ?`).
+The `conn` fixture already has both `Facility` entities seeded by Task 1's `init_db` — no per-test setup needed. `all_entities_of_type` is the helper Task 1 added to `tests/conftest.py`.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -551,7 +564,7 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add sot/adapters/schedule.py tests/test_schedule_extraction.py tests/fixtures/schedule_sample.pdf tests/fixtures/schedule_unknown_facility.pdf tests/fixtures/make_schedule_pdfs.py tests/conftest.py
+git add sot/adapters/schedule.py tests/test_schedule_extraction.py tests/fixtures/schedule_sample.pdf tests/fixtures/schedule_unknown_facility.pdf tests/fixtures/make_schedule_pdfs.py
 git commit -m "feat: add Schedule PDF extraction with facility batch-hold gating"
 ```
 
@@ -567,7 +580,7 @@ git commit -m "feat: add Schedule PDF extraction with facility batch-hold gating
 - Consumes: `schedule.PageTable` (Task 7)
 - Produces: `schedule.parse_shift_cell(cell_text: str) -> tuple[str, str] | None` — returns `(start_24h, end_24h)` as `"HH:MM"` strings, or `None` for `"OFF"`.
 - Produces: `schedule.compute_daily_hours(start_24h: str, end_24h: str) -> float` — handles overnight wraparound (e.g. `"23:00"`–`"07:00"` → `8.0`).
-- Produces: `schedule.annotate_daily_hours(page: PageTable) -> PageTable` — returns a new `PageTable` whose `rows` each gain an `hours_by_day: dict[str, float]` key, computed from the existing day columns; a day with `"OFF"` contributes `0.0`.
+- Produces: `schedule.annotate_daily_hours(page: PageTable) -> PageTable` — returns a new `PageTable` whose `rows` each gain an `"hours_by_day": dict[str, float]` key, keyed by the *same* day-header strings as the row's existing day columns (e.g. `"Mon 09/14"`) — not abbreviated, so Task 10's period-matching can parse the trailing date out of the same key it reads elsewhere. A day whose cell was `"OFF"` contributes `0.0`.
 
 - [ ] **Step 1: Write failing tests**
 
@@ -592,7 +605,7 @@ def test_compute_daily_hours(start, end, expected):
 
 def test_annotate_daily_hours_handles_off():
     page = PageTable(facility_name="Harborview Bayside",
-                      rows=[{"staff": "Marcus Bell", "role": "CNA",
+                      rows=[{"Staff": "Marcus Bell", "Role": "CNA",
                              "Mon 09/14": "3p-11p", "Tue 09/15": "OFF"}],
                       raw_text="")
     annotated = annotate_daily_hours(page)
@@ -628,14 +641,17 @@ git commit -m "feat: add shift time conversion and daily hours computation"
 
 **Files:**
 - Modify: `sot/resolver.py`
+- Create: `sot/facilities.py`
 - Test: `tests/test_resolver_combined_b.py`
+- Test: `tests/test_facilities.py`
 
 **Interfaces:**
 - Consumes: `graph.find_entity`, `graph.create_edge`, `graph.update_entity_attrs` (Task 1); `flags.create_flag` (Task 2); `rapidfuzz.fuzz.token_sort_ratio` (external)
+- Produces: `facilities.normalize_facility(raw: str) -> str | None` — maps `"BYS"`, `"Harborview Bayside"`, and Schedule page-header text to a single canonical facility name (or `None` if unrecognized). Needed here first (the resolver's facility-scoping) and reused unchanged by Task 10's cross-table facility check — created once, in this task, not duplicated later.
 - Produces: `resolver.resolve_payroll_employee(conn, payroll_record_id: str) -> str | None` — fuzzy-matches the record's `employee_name` + facility against `active`/`pending` Employee entities built by Task 5; returns the matched `employee_id` or `None`.
-- Produces: `resolver.resolve_schedule_employee(conn, shift_assignment_id: str) -> str | None` — same, using the `ShiftAssignment`'s `staff` name, scoped to its linked `facility_id`.
+- Produces: `resolver.resolve_schedule_employee(conn, shift_assignment_id: str) -> str | None` — same, using the `ShiftAssignment`'s `attrs["staff_name"]` (Task 7/8's field name), scoped to its linked `facility_id`.
 - Produces: `resolver.corroborate_combined_b(conn, employee_id: str, role_code_a: str, role_code_b: str) -> bool` — direct equality check (Payroll `job_code` vs. Schedule `Role`); on mismatch raises `identity_ambiguity` naming `"role_code"` and both values, returns `False`; returns `True` on match.
-- Produces: `resolver.attach_payroll_or_shift_fact(conn, fact_entity_id: str, fact_type: Literal["PayrollRecord","ShiftAssignment"]) -> None` — orchestrates: resolve → if `None`, flag `referential_orphan` and leave `attrs["employee_id"]` unset (stays pending); if matched, set `attrs["employee_id"]`, create the `paid_for`/`worked_shift` edge, and run `corroborate_combined_b` when a role-code pair is available for this fact.
+- Produces: `resolver.attach_payroll_or_shift_fact(conn, fact_entity_id: str, fact_type: Literal["PayrollRecord","ShiftAssignment"]) -> None` — orchestrates: resolve → if `None`, flag `referential_orphan` and leave `attrs["employee_id"]` unset (stays pending); if matched, set `attrs["employee_id"]`, create the edge as `create_edge(conn, employee_id, fact_entity_id, "paid_for" | "worked_shift")` (Employee → fact, same direction as Task 5's `holds_license` edges — Task 10's cascade depends on this direction), and run `corroborate_combined_b` when a role-code pair is available for this fact.
 
 - [ ] **Step 1: Write failing tests**
 
@@ -660,6 +676,11 @@ def test_no_match_returns_none(conn):
     pr = create_entity(conn, "PayrollRecord", {"employee_name": "NOBODY, NOONE", "facility_code": "BYS"})
     assert resolve_payroll_employee(conn, pr) is None
 
+def test_normalize_facility_matches_code_and_name():
+    assert normalize_facility("BYS") == "Harborview Bayside"
+    assert normalize_facility("Harborview Bayside") == "Harborview Bayside"
+    assert normalize_facility("Unit 7") is None
+
 def test_role_code_mismatch_flags_identity_ambiguity(conn):
     emp = create_entity(conn, "Employee", {})
     corroborate_combined_b(conn, emp, "RN", "CNA")
@@ -676,22 +697,22 @@ def test_attach_payroll_fact_sets_pending_on_no_match(conn):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest tests/test_resolver_combined_b.py -v`
+Run: `pytest tests/test_resolver_combined_b.py tests/test_facilities.py -v`
 Expected: FAIL
 
-- [ ] **Step 3: Implement the Combined-B functions in `sot/resolver.py`**
+- [ ] **Step 3: Implement `sot/facilities.py` and the Combined-B functions in `sot/resolver.py`**
 
-`resolve_payroll_employee`/`resolve_schedule_employee` pull all `Employee` entities (any status — a payroll fact can arrive before SST approval finishes), filter to the same facility (normalize `facility_code`/`facility_name` via the lookup table from Task 10's facility normalization — if Task 10 hasn't run yet in implementation order, inline a minimal `{"BYS": "Harborview Bayside", "RVD": "Harborview Riverdale"}` map here and have Task 10 reuse it rather than duplicating it), score each candidate's `"{first_name} {last_name}"` against the fact's name with `rapidfuzz.fuzz.token_sort_ratio` (handles the `"LASTNAME, FIRSTNAME"` vs. `"Firstname Lastname"` order difference), and return the top match if its score clears a threshold (e.g. 85), else `None`.
+`normalize_facility` is a static dict (`{"BYS": "Harborview Bayside", "RVD": "Harborview Riverdale"}`) plus a case-insensitive substring check against the two known canonical names, for inputs that already look like the full name. `resolve_payroll_employee`/`resolve_schedule_employee` pull all `Employee` entities (any status — a payroll fact can arrive before SST approval finishes), filter to the same facility via `normalize_facility`, score each candidate's `"{first_name} {last_name}"` against the fact's name with `rapidfuzz.fuzz.token_sort_ratio` (handles the `"LASTNAME, FIRSTNAME"` vs. `"Firstname Lastname"` order difference), and return the top match if its score clears a threshold (e.g. 85), else `None`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_resolver_combined_b.py -v`
+Run: `pytest tests/test_resolver_combined_b.py tests/test_facilities.py -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add sot/resolver.py tests/test_resolver_combined_b.py
+git add sot/resolver.py sot/facilities.py tests/test_resolver_combined_b.py tests/test_facilities.py
 git commit -m "feat: add Combined B resolver with fuzzy match and role-code corroboration"
 ```
 
@@ -701,13 +722,11 @@ git commit -m "feat: add Combined B resolver with fuzzy match and role-code corr
 
 **Files:**
 - Modify: `sot/combiner.py`
-- Create: `sot/facilities.py` (the normalization lookup, shared by Task 9 and here)
 - Test: `tests/test_combined_b_validation.py`
 - Test: `tests/test_cascade.py`
 
 **Interfaces:**
-- Consumes: everything from Tasks 1–9
-- Produces: `facilities.normalize_facility(raw: str) -> str | None` — maps `"BYS"`, `"Harborview Bayside"`, and page-header text to a single canonical facility name (or `None` if unrecognized); used by Task 9's resolver and here.
+- Consumes: everything from Tasks 1–9, including `facilities.normalize_facility` (Task 9, where it was created because the resolver needed it first) — reused here unchanged, not redefined.
 - Produces: `combiner.build_combined_b(conn, fact_entity_id: str, fact_type: Literal["PayrollRecord","ShiftAssignment"]) -> None` — if `attrs["employee_id"]` is unset, does nothing (already flagged as orphan by Task 9). Otherwise: checks facility agreement via `normalize_facility`, checks hours consistency (`PayrollRecord.hours_paid` vs. the sum of that employee's `ShiftAssignment.hours_by_day` for the same period) raising `business_rule_violation` on mismatch, and computes Payroll approval status per §8:
   - employee's `resolved_expiration` (Task 5) is after the whole pay period → `approved`
   - employee `status == "blocked"` for the whole period → `held`, flag `license_needs_check` reason already present from Task 5, no new flag needed here
@@ -717,11 +736,6 @@ git commit -m "feat: add Combined B resolver with fuzzy match and role-code corr
 - [ ] **Step 1: Write failing tests**
 
 ```python
-def test_normalize_facility_matches_code_and_name():
-    assert normalize_facility("BYS") == "Harborview Bayside"
-    assert normalize_facility("Harborview Bayside") == "Harborview Bayside"
-    assert normalize_facility("Unit 7") is None
-
 def test_facility_mismatch_flags_business_rule_violation(conn):
     emp = create_entity(conn, "Employee", {"facility": "Harborview Bayside", "status": "active",
                                             "resolved_expiration": "2099-01-01"})
@@ -739,7 +753,7 @@ def test_hours_mismatch_flagged(conn):
                                                 "period_start": "2026-09-14", "period_end": "2026-09-20",
                                                 "hours_paid": 50})
     create_entity(conn, "ShiftAssignment", {"employee_id": emp,
-                                             "hours_by_day": {"Mon": 8, "Tue": 8}})  # 16, not 50
+                                             "hours_by_day": {"Mon 09/14": 8, "Tue 09/15": 8}})  # 16, not 50
     build_combined_b(conn, pr, "PayrollRecord")
     grouped = open_flags_grouped_by_entity(conn)
     assert any(f.flag_type == "business_rule_violation" for f in grouped[pr])
@@ -790,9 +804,9 @@ def test_cascade_unblocks_held_payroll_on_license_renewal(conn):
 Run: `pytest tests/test_combined_b_validation.py tests/test_cascade.py -v`
 Expected: FAIL
 
-- [ ] **Step 3: Implement `sot/facilities.py` and the two `combiner.py` functions**
+- [ ] **Step 3: Implement the two `combiner.py` functions**
 
-`normalize_facility` is a static dict plus a case-insensitive substring check against known canonical names. `build_combined_b` reads the fact and its linked Employee via `attrs["employee_id"]`, runs the three checks described in the Interfaces block in order (facility, hours, then the three-way period/expiration comparison for `payroll_status`), writing `payroll_status` via `update_entity_attrs`. `cascade_from_employee` queries edges of type `paid_for`/`worked_shift` pointing away from the employee (reuse `graph.neighbors` with the employee as `from_id`, or add a symmetric lookup if the edge direction stored in Task 9 points the other way — keep edge direction consistent with whatever Task 9 chose, since this task's query depends on it) and calls `build_combined_b` on each.
+`build_combined_b` reads the fact and its linked Employee via `attrs["employee_id"]`, runs the three checks described in the Interfaces block in order (facility, hours, then the three-way period/expiration comparison for `payroll_status`), writing `payroll_status` via `update_entity_attrs`. The hours check sums `hours_by_day` only for keys falling within `[period_start, period_end]`: each key's trailing `MM/DD` is parsed and combined with the *year from `period_start`* (the day headers carry no year of their own, per the brief's format) to get a real date for the comparison. `cascade_from_employee` queries edges of type `paid_for`/`worked_shift` with the employee as `from_id` (Task 9 creates these edges in that direction — Employee → fact — matching Task 5's `holds_license` edges, which also run Employee → License; `graph.neighbors(conn, employee_id, "paid_for")` / `"worked_shift"` is the exact call) and calls `build_combined_b` on each.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -802,7 +816,7 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add sot/facilities.py sot/combiner.py tests/test_combined_b_validation.py tests/test_cascade.py
+git add sot/combiner.py tests/test_combined_b_validation.py tests/test_cascade.py
 git commit -m "feat: add cross-table validation, Payroll approval, and cascade re-check"
 ```
 
