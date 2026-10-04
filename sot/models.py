@@ -8,14 +8,14 @@ EDGE_TYPES = ("holds_license", "works_at", "assigned_to")
 
 # Flag types (eight flag types from spec §9)
 FLAG_TYPES = (
+    "data_source_anomaly",
     "identity_ambiguity",
     "attribute_disagreement",
+    "referential_orphan",
+    "business_rule_violation",
+    "staleness",
     "license_needs_check",
-    "assignment_conflict",
-    "employment_gap",
-    "license_type_mismatch",
-    "facility_missing_data",
-    "role_license_mismatch",
+    "partial_period_license_lapse",
 )
 
 # SST (Source of Truth) statuses
