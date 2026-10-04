@@ -75,14 +75,34 @@ def _fuzzy_key(name: str) -> str:
     return name.replace(",", " ").lower()
 
 
-def _best_name_match(candidates: list[Entity], fact_name: str) -> Optional[Entity]:
+def _best_name_match(
+    conn: sqlite3.Connection, fact_entity_id: str, candidates: list[Entity], fact_name: str
+) -> Optional[Entity]:
+    """Return the top fuzzy-matching candidate, or None if below threshold or tied.
+
+    A genuine tie (the highest score shared by 2+ candidates) is an identity_ambiguity,
+    not a silent pick -- flags on fact_entity_id and returns None.
+    """
     fact_key = _fuzzy_key(fact_name)
-    best, best_score = None, 0
-    for emp in candidates:
-        score = fuzz.token_sort_ratio(_fuzzy_key(_hr_full_name(emp)), fact_key)
-        if score > best_score:
-            best, best_score = emp, score
-    return best if best_score >= _FUZZY_MATCH_THRESHOLD else None
+    scored = [(fuzz.token_sort_ratio(_fuzzy_key(_hr_full_name(emp)), fact_key), emp) for emp in candidates]
+
+    if not scored:
+        return None
+
+    best_score = max(score for score, _ in scored)
+    if best_score < _FUZZY_MATCH_THRESHOLD:
+        return None
+
+    tied = [emp for score, emp in scored if score == best_score]
+    if len(tied) > 1:
+        names = ", ".join(_hr_full_name(emp) for emp in tied)
+        create_flag(
+            conn, fact_entity_id, "identity_ambiguity", "medium",
+            f"fuzzy-match tie: candidates [{names}] all scored {best_score} against {fact_name!r}"
+        )
+        return None
+
+    return tied[0]
 
 
 def resolve_payroll_employee(conn: sqlite3.Connection, payroll_record_id: str) -> Optional[str]:
@@ -95,7 +115,7 @@ def resolve_payroll_employee(conn: sqlite3.Connection, payroll_record_id: str) -
         if normalize_facility(emp.attrs.get("facility")) == facility
     ]
 
-    match = _best_name_match(candidates, record.attrs.get("employee_name", ""))
+    match = _best_name_match(conn, payroll_record_id, candidates, record.attrs.get("employee_name", ""))
     return match.id if match else None
 
 
@@ -115,7 +135,7 @@ def resolve_schedule_employee(conn: sqlite3.Connection, shift_assignment_id: str
             if fac is not None and fac.id == facility_id:
                 candidates.append(emp)
 
-    match = _best_name_match(candidates, shift.attrs.get("staff_name", ""))
+    match = _best_name_match(conn, shift_assignment_id, candidates, shift.attrs.get("staff_name", ""))
     return match.id if match else None
 
 

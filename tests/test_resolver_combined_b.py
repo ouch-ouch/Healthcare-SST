@@ -87,3 +87,55 @@ def test_resolve_schedule_employee_falls_back_when_facility_none(conn):
     shift = ce(conn, "ShiftAssignment", {"staff_name": "Sofia Reyes", "role": "RN",
                                           "facility_id": None})
     assert resolve_schedule_employee(conn, shift) == emp
+
+
+def test_fuzzy_match_tie_flags_identity_ambiguity_and_returns_none(conn):
+    # Two Employees with identical names at the same facility -- a genuine tie at the top
+    # score. Silently picking one would risk mis-attaching the fact to the wrong Employee.
+    create_entity(conn, "Employee", {"first_name": "Sofia", "last_name": "Reyes",
+                                      "facility": "Harborview Bayside", "status": "active"})
+    create_entity(conn, "Employee", {"first_name": "Sofia", "last_name": "Reyes",
+                                      "facility": "Harborview Bayside", "status": "active"})
+    pr = create_entity(conn, "PayrollRecord", {"employee_name": "REYES, SOFIA", "facility_code": "BYS"})
+
+    assert resolve_payroll_employee(conn, pr) is None
+
+    grouped = open_flags_grouped_by_entity(conn)
+    assert grouped[pr][0].flag_type == "identity_ambiguity"
+    assert "tie" in grouped[pr][0].reason
+
+
+def test_attach_fact_cross_corroborates_through_orchestrator_matching(conn):
+    emp = create_entity(conn, "Employee", {"first_name": "Sofia", "last_name": "Reyes",
+                                            "facility": "Harborview Bayside", "status": "active"})
+    pr = create_entity(conn, "PayrollRecord", {"employee_name": "REYES, SOFIA",
+                                                "facility_code": "BYS", "job_code": "RN"})
+    attach_payroll_or_shift_fact(conn, pr, "PayrollRecord")
+
+    from sot.graph import find_entity
+    facility = find_entity(conn, "Facility", name="Harborview Bayside")
+    shift = create_entity(conn, "ShiftAssignment", {"staff_name": "Sofia Reyes", "role": "RN",
+                                                     "facility_id": facility.id})
+    attach_payroll_or_shift_fact(conn, shift, "ShiftAssignment")
+
+    assert get_entity(conn, shift).attrs.get("employee_id") == emp
+    grouped = open_flags_grouped_by_entity(conn)
+    assert emp not in grouped
+
+
+def test_attach_fact_cross_corroborates_through_orchestrator_mismatch(conn):
+    emp = create_entity(conn, "Employee", {"first_name": "Sofia", "last_name": "Reyes",
+                                            "facility": "Harborview Bayside", "status": "active"})
+    pr = create_entity(conn, "PayrollRecord", {"employee_name": "REYES, SOFIA",
+                                                "facility_code": "BYS", "job_code": "RN"})
+    attach_payroll_or_shift_fact(conn, pr, "PayrollRecord")
+
+    from sot.graph import find_entity
+    facility = find_entity(conn, "Facility", name="Harborview Bayside")
+    shift = create_entity(conn, "ShiftAssignment", {"staff_name": "Sofia Reyes", "role": "CNA",
+                                                     "facility_id": facility.id})
+    attach_payroll_or_shift_fact(conn, shift, "ShiftAssignment")
+
+    assert get_entity(conn, shift).attrs.get("employee_id") == emp
+    grouped = open_flags_grouped_by_entity(conn)
+    assert any(f.flag_type == "identity_ambiguity" and "role_code" in f.reason for f in grouped[emp])
