@@ -9,7 +9,7 @@ from typing import Literal, Optional
 
 from rapidfuzz import fuzz
 
-from sot.graph import Entity, get_entity, find_entity, create_edge, update_entity_attrs, neighbors
+from sot.graph import Entity, get_entity, find_entity, create_edge, update_entity_attrs, neighbors, create_entity, remove_edge
 from sot.flags import create_flag
 from sot.facilities import normalize_facility
 
@@ -193,3 +193,49 @@ def attach_payroll_or_shift_fact(
                     else (other_role_code, role_code)
                 )
                 corroborate_combined_b(conn, employee_id, payroll_code, schedule_code)
+
+
+_EDGE_TYPE_TO_ENTITY_TYPE = {
+    "paid_for": "PayrollRecord",
+    "worked_shift": "ShiftAssignment",
+    "holds_license": "License",
+}
+
+
+def unmerge(conn: sqlite3.Connection, from_id: str, to_id: str, edge_type: str) -> str:
+    """
+    Reverse a merge by detaching a fact entity from an Employee.
+
+    Creates a new standalone copy of the fact entity with its attributes,
+    removes the edge connecting them, and clears the employee_id link on
+    the original fact entity.
+
+    Args:
+        conn: Database connection.
+        from_id: Employee entity ID.
+        to_id: Fact entity ID (PayrollRecord, ShiftAssignment, or License).
+        edge_type: Type of edge to remove ("paid_for", "worked_shift", "holds_license").
+
+    Returns:
+        str: The ID of the new standalone fact entity.
+    """
+    # Map edge type to entity type
+    entity_type = _EDGE_TYPE_TO_ENTITY_TYPE[edge_type]
+
+    # Get the original fact entity and copy its attributes
+    fact = get_entity(conn, to_id)
+    attrs = dict(fact.attrs)
+
+    # Remove employee_id from the copy
+    attrs.pop("employee_id", None)
+
+    # Create the new standalone entity
+    new_id = create_entity(conn, entity_type, attrs)
+
+    # Remove the edge
+    remove_edge(conn, from_id, to_id, edge_type)
+
+    # Clear employee_id on the original fact entity
+    update_entity_attrs(conn, to_id, {"employee_id": None})
+
+    return new_id
