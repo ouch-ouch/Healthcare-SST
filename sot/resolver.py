@@ -10,7 +10,7 @@ from typing import Literal, Optional
 from rapidfuzz import fuzz
 
 from sot.graph import Entity, get_entity, find_entity, create_edge, update_entity_attrs, neighbors, create_entity, remove_edge
-from sot.flags import create_flag
+from sot.flags import create_flag, has_open_flag
 from sot.facilities import normalize_facility
 
 _FUZZY_MATCH_THRESHOLD = 85
@@ -36,10 +36,11 @@ def attach_license(conn: sqlite3.Connection, employee_id: str) -> None:
     lic = find_entity(conn, "License", license_number=license_number) if license_number else None
 
     if lic is None:
-        create_flag(
-            conn, employee_id, "referential_orphan", "high",
-            f"no License entity found for license_number={license_number!r}"
-        )
+        if not has_open_flag(conn, employee_id, "referential_orphan"):
+            create_flag(
+                conn, employee_id, "referential_orphan", "high",
+                f"no License entity found for license_number={license_number!r}"
+            )
         return
 
     create_edge(conn, employee_id, lic.id, "holds_license")
@@ -171,10 +172,11 @@ def attach_payroll_or_shift_fact(
     employee_id = resolver(conn, fact_entity_id)
 
     if employee_id is None:
-        create_flag(
-            conn, fact_entity_id, "referential_orphan", "high",
-            f"no Employee entity matched for {fact_type} id={fact_entity_id!r}"
-        )
+        if not has_open_flag(conn, fact_entity_id, "referential_orphan"):
+            create_flag(
+                conn, fact_entity_id, "referential_orphan", "high",
+                f"no Employee entity matched for {fact_type} id={fact_entity_id!r}"
+            )
         return
 
     update_entity_attrs(conn, fact_entity_id, {"employee_id": employee_id})

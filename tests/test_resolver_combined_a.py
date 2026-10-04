@@ -22,6 +22,17 @@ def test_license_not_found_raises_referential_orphan(conn):
     assert grouped[emp][0].flag_type == "referential_orphan"
 
 
+def test_attach_license_rescan_does_not_duplicate_orphan_flag(conn):
+    # Simulates the CLI's idempotent rescan: attach_license is called again on an
+    # Employee that still doesn't resolve. Should not accumulate a second flag.
+    emp = create_entity(conn, "Employee", {"license_number": "RN-999999"})
+    attach_license(conn, emp)
+    attach_license(conn, emp)
+    grouped = open_flags_grouped_by_entity(conn)
+    orphan_flags = [f for f in grouped[emp] if f.flag_type == "referential_orphan"]
+    assert len(orphan_flags) == 1
+
+
 def test_corroboration_name_mismatch_flags_identity_ambiguity(conn):
     emp = create_entity(conn, "Employee", {"first_name": "Sofia", "last_name": "Reyes",
                                             "license_number": "RN-551203"})

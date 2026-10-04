@@ -55,6 +55,18 @@ def test_attach_payroll_fact_sets_pending_on_no_match(conn):
     assert grouped[pr][0].flag_type == "referential_orphan"
 
 
+def test_attach_payroll_fact_rescan_does_not_duplicate_orphan_flag(conn):
+    # Simulates the CLI's idempotent rescan: attach_payroll_or_shift_fact is called
+    # again on a fact that will never resolve (e.g. an employee never in the HR file).
+    # Should not accumulate a second referential_orphan flag.
+    pr = create_entity(conn, "PayrollRecord", {"employee_name": "NOBODY, NOONE", "facility_code": "BYS"})
+    attach_payroll_or_shift_fact(conn, pr, "PayrollRecord")
+    attach_payroll_or_shift_fact(conn, pr, "PayrollRecord")
+    grouped = open_flags_grouped_by_entity(conn)
+    orphan_flags = [f for f in grouped[pr] if f.flag_type == "referential_orphan"]
+    assert len(orphan_flags) == 1
+
+
 def test_attach_payroll_fact_links_employee_on_match(conn):
     emp = create_entity(conn, "Employee", {"first_name": "Sofia", "last_name": "Reyes",
                                             "facility": "Harborview Bayside", "status": "active"})

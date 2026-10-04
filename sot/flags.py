@@ -67,6 +67,15 @@ def create_flag(
     return flag_id
 
 
+def has_open_flag(conn: sqlite3.Connection, entity_id: str, flag_type: str) -> bool:
+    """Check whether an entity already has an open flag of the given type (idempotent re-flagging guard)."""
+    cursor = conn.execute(
+        "SELECT 1 FROM flags WHERE entity_id = ? AND flag_type = ? AND status = 'open' LIMIT 1",
+        (entity_id, flag_type)
+    )
+    return cursor.fetchone() is not None
+
+
 def open_flags_grouped_by_entity(conn: sqlite3.Connection) -> dict[str, list[Flag]]:
     """
     Get all open flags grouped by entity ID.
