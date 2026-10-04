@@ -50,6 +50,21 @@ def test_mid_week_lapse_flagged_partial(conn):
     assert any(f.flag_type == "partial_period_license_lapse" for f in grouped[pr])
 
 
+def test_shift_facility_mismatch_flags_business_rule_violation(conn):
+    bys = create_entity(conn, "Facility", {"name": "Harborview Bayside"})
+    rvd = create_entity(conn, "Facility", {"name": "Harborview Riverdale"})
+    emp = create_entity(conn, "Employee", {"facility": "Harborview Bayside", "status": "active",
+                                            "resolved_expiration": "2099-01-01"})
+    shift = create_entity(conn, "ShiftAssignment", {"employee_id": emp, "facility_id": rvd,
+                                                      "hours_by_day": {"Mon 09/14": 8}})
+    create_edge(conn, emp, shift, "worked_shift")
+    build_combined_b(conn, shift, "ShiftAssignment")
+    grouped = open_flags_grouped_by_entity(conn)
+    assert any(f.flag_type == "business_rule_violation" for f in grouped[shift])
+    # sanity check this isn't a false positive from a matching facility.
+    assert bys != rvd
+
+
 def test_orphan_fact_is_noop(conn):
     pr = create_entity(conn, "PayrollRecord", {"facility_code": "BYS",
                                                 "period_start": "2026-09-14", "period_end": "2026-09-20",
