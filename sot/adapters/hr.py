@@ -40,8 +40,11 @@ def ingest_hr_roster(conn: sqlite3.Connection, csv_path: str) -> IngestResult:
     today = datetime.now().date()
 
     for idx, row in df.iterrows():
-        # Convert row to dict, preserving all CSV columns
-        attrs = row.to_dict()
+        # Convert row to dict, preserving all CSV columns, and cast to native Python types
+        attrs = {k: v.item() if hasattr(v, "item") else v for k, v in row.to_dict().items()}
+
+        # Add required status field
+        attrs["status"] = "pending"
 
         # Create the entity first (even if flagged, per spec)
         entity_id = create_entity(conn, "Employee", attrs)
