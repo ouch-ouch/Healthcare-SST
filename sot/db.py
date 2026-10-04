@@ -34,6 +34,10 @@ def init_db(path: str) -> sqlite3.Connection:
     """)
 
     # Create edges table
+    # Note: composite PK (from_id, to_id, type) + INSERT OR REPLACE means a second edge
+    # of the same type between the same pair silently replaces the first. This is
+    # intentional since the spec never calls for multiple edges of same type between
+    # same entities; if parallel edges are needed later, remove the composite PK.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS edges (
             from_id TEXT NOT NULL,
