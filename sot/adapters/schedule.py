@@ -1,11 +1,12 @@
 """Schedule PDF adapter: extracts per-page staff/day tables and resolves facility."""
 
+import json
 import sqlite3
 from dataclasses import dataclass, field
 
 import pdfplumber
 
-from sot.graph import create_entity, find_entity
+from sot.graph import Entity, create_entity, find_entity, update_entity_attrs
 from sot.flags import create_flag
 
 
@@ -54,7 +55,9 @@ def extract_pages(pdf_path: str) -> list[PageTable]:
 
 
 def parse_shift_cell(cell_text: str) -> tuple[str, str] | None:
-    """Parse a shift cell like '7a-3p' to 24-hour format ('07:00', '15:00'), or None for 'OFF'."""
+    """Parse a shift cell like '7a-3p' or '7:30a-3:30p' to 24-hour format, or None for 'OFF'/blank."""
+    if not isinstance(cell_text, str) or not cell_text.strip():
+        return None
     cell_text = cell_text.strip()
     if cell_text.upper() == "OFF":
         return None
@@ -71,15 +74,20 @@ def parse_shift_cell(cell_text: str) -> tuple[str, str] | None:
 
 
 def _convert_12h_to_24h(time_str: str) -> str:
-    """Convert '7a', '3p', '11p' to '07:00', '15:00', '23:00' format."""
+    """Convert '7a'/'3p'/'11p' or '7:30a'/'3:30p' to '07:00'/'15:00'/'23:00'/'15:30' format."""
     time_str = time_str.strip().lower()
 
     # Determine AM/PM
     is_pm = time_str.endswith("p")
     is_am = time_str.endswith("a")
 
-    # Extract hour
-    hour_str = time_str[:-1] if (is_pm or is_am) else time_str
+    # Extract hour[:minute]
+    hour_min_str = time_str[:-1] if (is_pm or is_am) else time_str
+    if ":" in hour_min_str:
+        hour_str, minute_str = hour_min_str.split(":", 1)
+        minute = int(minute_str)
+    else:
+        hour_str, minute = hour_min_str, 0
     hour = int(hour_str)
 
     # Convert to 24-hour format
@@ -90,7 +98,7 @@ def _convert_12h_to_24h(time_str: str) -> str:
         if hour == 12:
             hour = 0
 
-    return f"{hour:02d}:00"
+    return f"{hour:02d}:{minute:02d}"
 
 
 def compute_daily_hours(start_24h: str, end_24h: str) -> float:
@@ -148,16 +156,46 @@ def store_schedule_batch(conn: sqlite3.Connection, page: PageTable) -> None:
     facility_id = facility.id if facility else None
     batch_status = "linked" if facility_id else "held"
 
+    if not page.rows:
+        anchor = facility.id if facility else None
+        if anchor is not None:
+            create_flag(
+                conn,
+                anchor,
+                "data_source_anomaly",
+                "medium",
+                f"Schedule page for facility {page.facility_name!r} yielded no parseable rows",
+            )
+        else:
+            print(f"WARNING: schedule page (facility={page.facility_name!r}) yielded no parseable rows")
+        return
+
     for i, row in enumerate(page.rows):
-        shifts = {k: v for k, v in row.items() if k not in ("Staff", "Role")}
+        shifts = {k: v for k, v in row.items() if k not in ("Staff", "Role", "hours_by_day")}
+        hours_by_day = row.get("hours_by_day", {})
+        day_key = next(iter(shifts), None)
+
+        existing = None
+        for candidate in _existing_shift_candidates(conn, facility_id, page.facility_name, row.get("Staff")):
+            if day_key is not None and candidate.attrs.get("shifts", {}).get(day_key) is not None:
+                existing = candidate
+                break
+
         attrs = {
             "staff_name": row["Staff"],
             "role": row["Role"],
             "shifts": shifts,
+            "hours_by_day": hours_by_day,
             "facility_id": facility_id,
+            "facility_name": page.facility_name,
             "batch_status": batch_status,
         }
-        entity_id = create_entity(conn, "ShiftAssignment", attrs)
+
+        if existing is not None:
+            update_entity_attrs(conn, existing.id, attrs)
+            entity_id = existing.id
+        else:
+            entity_id = create_entity(conn, "ShiftAssignment", attrs)
 
         if batch_status == "held" and i == 0:
             create_flag(
@@ -167,3 +205,23 @@ def store_schedule_batch(conn: sqlite3.Connection, page: PageTable) -> None:
                 "medium",
                 f"Unresolved facility on schedule page: {page.facility_name!r}",
             )
+
+
+def _existing_shift_candidates(
+    conn: sqlite3.Connection, facility_id: str | None, raw_facility_name: str | None, staff_name: str | None
+) -> list[Entity]:
+    """All ShiftAssignment entities already stored for this facility/staff (idempotency check for I5)."""
+    cursor = conn.execute("SELECT id, type, attrs FROM entities WHERE type = 'ShiftAssignment'")
+
+    result = []
+    for row in cursor.fetchall():
+        attrs = json.loads(row[2])
+        if attrs.get("staff_name") != staff_name:
+            continue
+        if facility_id is not None:
+            same_facility = attrs.get("facility_id") == facility_id
+        else:
+            same_facility = attrs.get("facility_id") is None and attrs.get("facility_name") == raw_facility_name
+        if same_facility:
+            result.append(Entity(id=row[0], type=row[1], attrs=attrs))
+    return result

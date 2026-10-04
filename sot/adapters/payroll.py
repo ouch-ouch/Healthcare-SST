@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime
 import pandas as pd
 
-from sot.graph import create_entity
+from sot.graph import create_entity, find_entity, update_entity_attrs
 from sot.flags import create_flag
 from sot.adapters.hr import IngestResult
 
@@ -37,9 +37,16 @@ def ingest_payroll(conn: sqlite3.Connection, csv_path: str) -> IngestResult:
         # Convert row to dict, preserving all CSV columns, and cast to native Python types
         attrs = {k: v.item() if hasattr(v, "item") else v for k, v in row.to_dict().items()}
 
-        # Create the entity first (even if flagged, per spec)
-        entity_id = create_entity(conn, "PayrollRecord", attrs)
-        created_count += 1
+        # Create the entity first (even if flagged, per spec), unless it already
+        # exists (same payroll_id re-ingested) -- then update it in place, same
+        # idempotency pattern as HR/Licenses (I5).
+        existing = find_entity(conn, "PayrollRecord", payroll_id=attrs.get("payroll_id"))
+        if existing is not None:
+            update_entity_attrs(conn, existing.id, attrs)
+            entity_id = existing.id
+        else:
+            entity_id = create_entity(conn, "PayrollRecord", attrs)
+            created_count += 1
 
         period_start_str = attrs.get("period_start")
         period_end_str = attrs.get("period_end")
@@ -53,7 +60,14 @@ def ingest_payroll(conn: sqlite3.Connection, csv_path: str) -> IngestResult:
                 if period_start > today:
                     has_future_period = True
             except (ValueError, TypeError):
-                pass
+                create_flag(
+                    conn,
+                    entity_id,
+                    "data_source_anomaly",
+                    "medium",
+                    f"Unparseable period_start value: {period_start_str!r}"
+                )
+                flagged_count += 1
 
         if period_end_str:
             try:
@@ -61,7 +75,14 @@ def ingest_payroll(conn: sqlite3.Connection, csv_path: str) -> IngestResult:
                 if period_end > today:
                     has_future_period = True
             except (ValueError, TypeError):
-                pass
+                create_flag(
+                    conn,
+                    entity_id,
+                    "data_source_anomaly",
+                    "medium",
+                    f"Unparseable period_end value: {period_end_str!r}"
+                )
+                flagged_count += 1
 
         if has_future_period:
             create_flag(

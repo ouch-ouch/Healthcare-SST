@@ -61,7 +61,12 @@ def ingest(conn: sqlite3.Connection, file_path: str) -> None:
             store_schedule_batch(conn, annotate_daily_hours(page))
     elif suffix == ".csv":
         with open(file_path, newline="") as f:
-            header = set(next(csv.reader(f)))
+            header_row = next(csv.reader(f), None)
+
+        if header_row is None:
+            raise ValueError(f"Unrecognized CSV header in {file_path!r}: empty file")
+
+        header = set(header_row)
 
         if "employee_id" in header:
             ingest_hr_roster(conn, file_path)

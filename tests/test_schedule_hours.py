@@ -15,6 +15,9 @@ from sot.adapters.schedule import (
     ("11p-7a", ("23:00", "07:00")),
     ("7a-7p", ("07:00", "19:00")),
     ("OFF", None),
+    ("7:30a-3:30p", ("07:30", "15:30")),
+    (None, None),  # I6: pdfplumber returns None for blank cells -- must not raise
+    ("", None),
 ])
 def test_parse_shift_cell(cell, expected):
     assert parse_shift_cell(cell) == expected

@@ -86,7 +86,14 @@ def ingest_hr_roster(conn: sqlite3.Connection, csv_path: str) -> IngestResult:
                     )
                     flagged_count += 1
             except (ValueError, TypeError):
-                pass
+                create_flag(
+                    conn,
+                    entity_id,
+                    "data_source_anomaly",
+                    "medium",
+                    f"Unparseable hire_date value: {hire_date_str!r}"
+                )
+                flagged_count += 1
 
         # Check license_expiration >= today
         if license_expiration_str:
@@ -102,6 +109,13 @@ def ingest_hr_roster(conn: sqlite3.Connection, csv_path: str) -> IngestResult:
                     )
                     flagged_count += 1
             except (ValueError, TypeError):
-                pass
+                create_flag(
+                    conn,
+                    entity_id,
+                    "data_source_anomaly",
+                    "medium",
+                    f"Unparseable license_expiration value: {license_expiration_str!r}"
+                )
+                flagged_count += 1
 
     return IngestResult(created=created_count, flagged=flagged_count)

@@ -49,8 +49,17 @@ def create_flag(
         detail: Optional dictionary of additional details.
 
     Returns:
-        str: The ID of the created flag.
+        str: The ID of the created flag, or of the existing open flag if an open
+        flag with the same (entity_id, flag_type, reason) already exists (I4 dedup).
     """
+    cursor = conn.execute(
+        "SELECT id FROM flags WHERE entity_id = ? AND flag_type = ? AND reason = ? AND status = 'open' LIMIT 1",
+        (entity_id, flag_type, reason)
+    )
+    existing = cursor.fetchone()
+    if existing is not None:
+        return existing[0]
+
     flag_id = str(uuid.uuid4())
     now = _now()
     detail_json = json.dumps(detail) if detail is not None else None
@@ -125,13 +134,16 @@ def resolve_flag(
         resolution: Text describing how the flag was resolved.
     """
     now = _now()
-    conn.execute(
+    cursor = conn.execute(
         """
         UPDATE flags SET status = ?, resolved_by = ?, resolution = ?, resolved_at = ? WHERE id = ?
         """,
         ("resolved", resolved_by, resolution, now, flag_id)
     )
     conn.commit()
+
+    if cursor.rowcount == 0:
+        raise ValueError(f"No flag found with id {flag_id!r}")
 
 
 def get_all_flags_for_entity(conn: sqlite3.Connection, entity_id: str) -> list[Flag]:

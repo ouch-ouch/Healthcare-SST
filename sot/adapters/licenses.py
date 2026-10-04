@@ -77,7 +77,14 @@ def ingest_licenses(conn: sqlite3.Connection, csv_path: str) -> IngestResult:
                     )
                     flagged_count += 1
             except (ValueError, TypeError):
-                pass
+                create_flag(
+                    conn,
+                    entity_id,
+                    "data_source_anomaly",
+                    "medium",
+                    f"Unparseable expiration_date value: {expiration_date_str!r}"
+                )
+                flagged_count += 1
 
         # Check last_verified <= today
         if last_verified_str:
@@ -93,6 +100,13 @@ def ingest_licenses(conn: sqlite3.Connection, csv_path: str) -> IngestResult:
                     )
                     flagged_count += 1
             except (ValueError, TypeError):
-                pass
+                create_flag(
+                    conn,
+                    entity_id,
+                    "data_source_anomaly",
+                    "medium",
+                    f"Unparseable last_verified value: {last_verified_str!r}"
+                )
+                flagged_count += 1
 
     return IngestResult(created=created_count, flagged=flagged_count)

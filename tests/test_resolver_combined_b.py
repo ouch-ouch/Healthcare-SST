@@ -135,6 +135,33 @@ def test_attach_fact_cross_corroborates_through_orchestrator_matching(conn):
     assert emp not in grouped
 
 
+def test_borderline_fuzzy_match_tags_resolution_confidence_and_business_rule_flag_carries_note(conn):
+    """I8: a borderline (score < 95) passing match tags the employee; a later business_rule_violation
+    flag against it should mention the borderline match as context."""
+    from sot.combiner import build_combined_b
+
+    emp = create_entity(conn, "Employee", {"first_name": "Marcus", "last_name": "Bell",
+                                            "facility": "Harborview Bayside", "status": "active"})
+    # "Marc Bell" vs "Marcus Bell" is a close-but-not-exact fuzzy match (< 95, >= threshold).
+    pr = create_entity(conn, "PayrollRecord", {"employee_name": "BELL, MARC",
+                                                "facility_code": "BYS", "job_code": "RN",
+                                                "period_start": "2026-09-14", "period_end": "2026-09-20",
+                                                "hours_paid": 999})
+    attach_payroll_or_shift_fact(conn, pr, "PayrollRecord")
+    assert get_entity(conn, emp).attrs.get("resolution_confidence") == "borderline"
+
+    # Give the employee a linked shift whose hours don't match the (deliberately
+    # bogus) hours_paid=999, so the hours check fires a business_rule_violation.
+    from sot.graph import create_edge
+    shift = create_entity(conn, "ShiftAssignment", {"hours_by_day": {"Mon 09/14": 8.0}})
+    create_edge(conn, emp, shift, "worked_shift")
+
+    build_combined_b(conn, pr, "PayrollRecord")
+    grouped = open_flags_grouped_by_entity(conn)
+    violation = next(f for f in grouped[pr] if f.flag_type == "business_rule_violation")
+    assert "borderline" in violation.reason
+
+
 def test_attach_fact_cross_corroborates_through_orchestrator_mismatch(conn):
     emp = create_entity(conn, "Employee", {"first_name": "Sofia", "last_name": "Reyes",
                                             "facility": "Harborview Bayside", "status": "active"})

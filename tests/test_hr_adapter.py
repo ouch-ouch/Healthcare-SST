@@ -62,3 +62,16 @@ def test_license_expiration_in_past_flagged(conn):
     ingest_hr_roster(conn, "tests/fixtures/hr_roster_past_expiration.csv")
     grouped = open_flags_grouped_by_entity(conn)
     assert any(f.flag_type == "data_source_anomaly" for flags in grouped.values() for f in flags)
+
+
+def test_unparseable_hire_date_flagged_not_silently_swallowed(conn, tmp_path):
+    """M10: a malformed date value must raise a data_source_anomaly flag, not be silently ignored."""
+    path = tmp_path / "hr_bad_date.csv"
+    path.write_text(
+        "employee_id,first_name,last_name,facility,hire_date,license_expiration\n"
+        "E999,Bad,Date,Harborview Bayside,not-a-date,2026-12-31\n"
+    )
+    ingest_hr_roster(conn, str(path))
+    grouped = open_flags_grouped_by_entity(conn)
+    reasons = [f.reason for flags in grouped.values() for f in flags]
+    assert any("hire_date" in r for r in reasons)

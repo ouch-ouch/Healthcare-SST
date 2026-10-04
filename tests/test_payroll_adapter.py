@@ -29,3 +29,13 @@ def test_payroll_record_starts_unlinked(conn):
     pr = find_entity(conn, "PayrollRecord", payroll_id="P-3001")
     assert pr is not None
     assert pr.attrs.get("employee_id") is None
+
+
+def test_reingesting_same_file_reports_zero_created(conn):
+    """I5: re-ingesting rows that already exist must not duplicate or re-count as created."""
+    ingest_payroll(conn, "tests/fixtures/payroll.csv")
+    result = ingest_payroll(conn, "tests/fixtures/payroll.csv")
+    assert result.created == 0
+    from tests.conftest import all_entities_of_type
+    all_p3001 = [e for e in all_entities_of_type(conn, "PayrollRecord") if e.attrs.get("payroll_id") == "P-3001"]
+    assert len(all_p3001) == 1

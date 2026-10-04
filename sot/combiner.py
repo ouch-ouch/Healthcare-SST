@@ -15,6 +15,15 @@ from sot.facilities import normalize_facility
 
 _HOURS_TOLERANCE = 0.01
 
+_BORDERLINE_NOTE = " (note: this employee's identity match was borderline-confidence)"
+
+
+def _with_borderline_note(reason: str, emp: Entity) -> str:
+    """I8: append a borderline-confidence note if the employee's identity match was borderline."""
+    if emp.attrs.get("resolution_confidence") == "borderline":
+        return reason + _BORDERLINE_NOTE
+    return reason
+
 _FACT_EDGE_TYPE = {
     "PayrollRecord": "paid_for",
     "ShiftAssignment": "worked_shift",
@@ -125,6 +134,18 @@ def build_combined_a(conn: sqlite3.Connection, employee_id: str) -> None:
 
     evaluate(conn, get_entity(conn, employee_id), COMBINED_A_RULES)
 
+    # I3: a fully clean, license-verified employee should reach "active" (not stay
+    # stuck at "pending" forever), and a later license renewal should clear "blocked".
+    # Gate rules are evaluated directly here (rather than trusting the entity's
+    # current `status` attr) because a passing gate rule leaves `status` untouched --
+    # a stale "blocked" from a previous run would otherwise never clear.
+    gate_rules_pass = all(
+        rule.check(get_entity(conn, employee_id), conn)
+        for rule in COMBINED_A_RULES if rule.type == "gate"
+    )
+    if gate_rules_pass and lic is not None:
+        update_entity_attrs(conn, employee_id, {"status": "active"})
+
 
 # --- Combined B: cross-table validation, payroll approval, cascade ---
 
@@ -165,7 +186,10 @@ def build_combined_b(
         if fact_facility != emp_facility:
             create_flag(
                 conn, fact_entity_id, "business_rule_violation", "high",
-                f"facility mismatch: payroll facility={fact_facility!r} vs employee facility={emp_facility!r}"
+                _with_borderline_note(
+                    f"facility mismatch: payroll facility={fact_facility!r} vs employee facility={emp_facility!r}",
+                    emp,
+                )
             )
     else:
         emp_facility_name = normalize_facility(emp.attrs.get("facility"))
@@ -175,7 +199,10 @@ def build_combined_b(
         if fact_facility_id is not None and emp_facility_id is not None and fact_facility_id != emp_facility_id:
             create_flag(
                 conn, fact_entity_id, "business_rule_violation", "high",
-                f"facility mismatch: shift facility_id={fact_facility_id!r} vs employee facility_id={emp_facility_id!r}"
+                _with_borderline_note(
+                    f"facility mismatch: shift facility_id={fact_facility_id!r} vs employee facility_id={emp_facility_id!r}",
+                    emp,
+                )
             )
 
     # 2. Hours check (only meaningful for PayrollRecord, the only fact type with hours_paid).
@@ -192,7 +219,10 @@ def build_combined_b(
             if abs(worked_hours - hours_paid) > _HOURS_TOLERANCE:
                 create_flag(
                     conn, fact_entity_id, "business_rule_violation", "high",
-                    f"hours mismatch: hours_paid={hours_paid!r} vs worked hours={worked_hours!r}"
+                    _with_borderline_note(
+                        f"hours mismatch: hours_paid={hours_paid!r} vs worked hours={worked_hours!r}",
+                        emp,
+                    )
                 )
 
     # 3. Payroll approval status, derived from the three-way period/resolved_expiration comparison.

@@ -1,6 +1,6 @@
 """Tests for the Combined A resolver: corroboration, precedence, SST gate."""
 
-from sot.graph import create_entity, create_edge, get_entity, neighbors
+from sot.graph import create_entity, create_edge, get_entity, neighbors, update_entity_attrs
 from sot.flags import open_flags_grouped_by_entity
 from sot.resolver import attach_license, corroborate_combined_a
 from sot.combiner import build_combined_a
@@ -50,6 +50,29 @@ def test_combined_a_uses_soonest_expiration(conn):
     create_edge(conn, emp, lic, "holds_license")
     build_combined_a(conn, emp)
     assert get_entity(conn, emp).attrs["resolved_expiration"] == "2026-12-31"
+
+
+def test_combined_a_sets_status_active_when_clean_and_licensed(conn):
+    """I3: a fully clean, license-verified employee must reach 'active', not stay 'pending'."""
+    emp = create_entity(conn, "Employee", {"status": "pending", "license_expiration": "2099-01-01"})
+    lic = create_entity(conn, "License", {"expiration_date": "2099-01-01"})
+    create_edge(conn, emp, lic, "holds_license")
+    build_combined_a(conn, emp)
+    assert get_entity(conn, emp).attrs["status"] == "active"
+
+
+def test_combined_a_clears_blocked_after_license_renewal(conn):
+    """I3: a previously-blocked employee must clear to 'active' once the license is renewed."""
+    emp = create_entity(conn, "Employee", {"status": "blocked", "license_expiration": "2020-01-01"})
+    lic = create_entity(conn, "License", {"expiration_date": "2020-01-01"})
+    create_edge(conn, emp, lic, "holds_license")
+    build_combined_a(conn, emp)
+    assert get_entity(conn, emp).attrs["status"] == "blocked"  # still expired -> still blocked
+
+    update_entity_attrs(conn, emp, {"license_expiration": "2099-01-01"})
+    update_entity_attrs(conn, lic, {"expiration_date": "2099-01-01"})
+    build_combined_a(conn, emp)
+    assert get_entity(conn, emp).attrs["status"] == "active"
 
 
 def test_combined_a_sets_display_name_from_hr(conn):

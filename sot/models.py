@@ -1,10 +1,11 @@
 """Core models and constants for the SOT (Source of Truth) system."""
 
 # Entity types
-ENTITY_TYPES = ("Employee", "License", "Facility", "Assignment")
+ENTITY_TYPES = ("Employee", "License", "Facility", "PayrollRecord", "ShiftAssignment")
 
-# Edge types
-EDGE_TYPES = ("holds_license", "works_at", "assigned_to")
+# Edge types (verified against actual create_edge()/neighbors() calls in the codebase;
+# the spec's "employed_at" is not actually used -- Employee<->Facility is an attrs link, not an edge)
+EDGE_TYPES = ("holds_license", "paid_for", "worked_shift")
 
 # Flag types (eight flag types from spec §9)
 FLAG_TYPES = (

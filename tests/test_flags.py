@@ -12,6 +12,31 @@ def test_create_flag_and_group_by_entity(conn):
     assert grouped[eid][0].status == "open"
 
 
+def test_create_flag_dedupes_same_entity_type_and_reason(conn):
+    """I4: repeated create_flag calls with the same (entity_id, flag_type, reason) must not duplicate."""
+    eid = create_entity(conn, "Employee", {})
+    fid1 = create_flag(conn, eid, "business_rule_violation", "high", "hours mismatch")
+    fid2 = create_flag(conn, eid, "business_rule_violation", "high", "hours mismatch")
+    assert fid1 == fid2
+    grouped = open_flags_grouped_by_entity(conn)
+    assert len(grouped[eid]) == 1
+
+
+def test_create_flag_does_not_dedupe_different_reasons(conn):
+    """Two different reasons for the same flag_type on one entity are legitimately distinct."""
+    eid = create_entity(conn, "Employee", {})
+    create_flag(conn, eid, "business_rule_violation", "high", "hours mismatch")
+    create_flag(conn, eid, "business_rule_violation", "high", "facility mismatch")
+    grouped = open_flags_grouped_by_entity(conn)
+    assert len(grouped[eid]) == 2
+
+
+def test_resolve_flag_raises_on_unknown_id(conn):
+    """M13: resolve_flag must not silently report success when nothing was updated."""
+    with pytest.raises(ValueError):
+        resolve_flag(conn, "not-a-real-flag-id", resolved_by="reviewer1", resolution="n/a")
+
+
 def test_resolve_flag_is_additive_not_overwrite(conn):
     eid = create_entity(conn, "Employee", {})
     fid = create_flag(conn, eid, "identity_ambiguity", "high", "name mismatch")

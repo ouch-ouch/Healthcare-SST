@@ -9,8 +9,8 @@ from typing import Literal, Optional
 
 from rapidfuzz import fuzz
 
-from sot.graph import Entity, get_entity, find_entity, create_edge, update_entity_attrs, neighbors, create_entity, remove_edge
-from sot.flags import create_flag, has_open_flag
+from sot.graph import Entity, get_entity, find_entity, create_edge, update_entity_attrs, neighbors, remove_edge
+from sot.flags import create_flag
 from sot.facilities import normalize_facility
 
 _FUZZY_MATCH_THRESHOLD = 85
@@ -36,11 +36,10 @@ def attach_license(conn: sqlite3.Connection, employee_id: str) -> None:
     lic = find_entity(conn, "License", license_number=license_number) if license_number else None
 
     if lic is None:
-        if not has_open_flag(conn, employee_id, "referential_orphan"):
-            create_flag(
-                conn, employee_id, "referential_orphan", "high",
-                f"no License entity found for license_number={license_number!r}"
-            )
+        create_flag(
+            conn, employee_id, "referential_orphan", "high",
+            f"no License entity found for license_number={license_number!r}"
+        )
         return
 
     create_edge(conn, employee_id, lic.id, "holds_license")
@@ -103,7 +102,13 @@ def _best_name_match(
         )
         return None
 
-    return tied[0]
+    match = tied[0]
+    # I8 / spec §11: a passing-but-borderline match carries its confidence forward
+    # onto the matched entity, so a later flag can mention it as context.
+    if best_score < 95:
+        update_entity_attrs(conn, match.id, {"resolution_confidence": "borderline"})
+
+    return match
 
 
 def resolve_payroll_employee(conn: sqlite3.Connection, payroll_record_id: str) -> Optional[str]:
@@ -172,11 +177,10 @@ def attach_payroll_or_shift_fact(
     employee_id = resolver(conn, fact_entity_id)
 
     if employee_id is None:
-        if not has_open_flag(conn, fact_entity_id, "referential_orphan"):
-            create_flag(
-                conn, fact_entity_id, "referential_orphan", "high",
-                f"no Employee entity matched for {fact_type} id={fact_entity_id!r}"
-            )
+        create_flag(
+            conn, fact_entity_id, "referential_orphan", "high",
+            f"no Employee entity matched for {fact_type} id={fact_entity_id!r}"
+        )
         return
 
     update_entity_attrs(conn, fact_entity_id, {"employee_id": employee_id})
@@ -197,20 +201,15 @@ def attach_payroll_or_shift_fact(
                 corroborate_combined_b(conn, employee_id, payroll_code, schedule_code)
 
 
-_EDGE_TYPE_TO_ENTITY_TYPE = {
-    "paid_for": "PayrollRecord",
-    "worked_shift": "ShiftAssignment",
-    "holds_license": "License",
-}
-
 
 def unmerge(conn: sqlite3.Connection, from_id: str, to_id: str, edge_type: str) -> str:
     """
     Reverse a merge by detaching a fact entity from an Employee.
 
-    Creates a new standalone copy of the fact entity with its attributes,
-    removes the edge connecting them, and clears the employee_id link on
-    the original fact entity.
+    Per spec §11, unmerge only detaches: removes the edge and clears employee_id
+    on the ORIGINAL fact entity. The fact itself already survives (nothing is
+    destroyed) -- there's no need to clone it (I7: cloning left two entities for
+    one real-world fact, which then both got re-linked on the next rescan).
 
     Args:
         conn: Database connection.
@@ -219,25 +218,8 @@ def unmerge(conn: sqlite3.Connection, from_id: str, to_id: str, edge_type: str) 
         edge_type: Type of edge to remove ("paid_for", "worked_shift", "holds_license").
 
     Returns:
-        str: The ID of the new standalone fact entity.
+        str: The ID of the original (now-detached) fact entity.
     """
-    # Map edge type to entity type
-    entity_type = _EDGE_TYPE_TO_ENTITY_TYPE[edge_type]
-
-    # Get the original fact entity and copy its attributes
-    fact = get_entity(conn, to_id)
-    attrs = dict(fact.attrs)
-
-    # Remove employee_id from the copy
-    attrs.pop("employee_id", None)
-
-    # Create the new standalone entity
-    new_id = create_entity(conn, entity_type, attrs)
-
-    # Remove the edge
     remove_edge(conn, from_id, to_id, edge_type)
-
-    # Clear employee_id on the original fact entity
     update_entity_attrs(conn, to_id, {"employee_id": None})
-
-    return new_id
+    return to_id

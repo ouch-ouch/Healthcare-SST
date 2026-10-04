@@ -79,6 +79,14 @@ def test_ingest_schedule_pdf_creates_shift_assignments(conn):
     assert cur.fetchone()[0] > 0
 
 
+def test_ingest_empty_csv_raises_value_error_not_stopiteration(conn, tmp_path):
+    """M12: an empty CSV must raise the same ValueError as an unrecognized header, not StopIteration."""
+    path = tmp_path / "empty.csv"
+    path.write_text("")
+    with pytest.raises(ValueError):
+        ingest(conn, str(path))
+
+
 def test_resolve_flag_cmd_resolves_flag(conn):
     ingest(conn, "tests/fixtures/hr_roster_duplicate_id.csv")
     grouped = list(__import__("sot.flags", fromlist=["open_flags_grouped_by_entity"])
