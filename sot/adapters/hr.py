@@ -43,18 +43,17 @@ def ingest_hr_roster(conn: sqlite3.Connection, csv_path: str) -> IngestResult:
         # Convert row to dict, preserving all CSV columns, and cast to native Python types
         attrs = {k: v.item() if hasattr(v, "item") else v for k, v in row.to_dict().items()}
 
-        # Add required status field
-        attrs["status"] = "pending"
-
         # Create the entity first (even if flagged, per spec), unless it already
         # exists (same employee_id re-ingested) -- then update it in place.
+        # status is set only on create: it's owned by gate rules afterward, and
+        # re-ingesting an existing row must not clobber a status a rule already set.
         existing = find_entity(conn, "Employee", employee_id=attrs.get("employee_id"))
         if existing is not None:
             update_entity_attrs(conn, existing.id, attrs)
             entity_id = existing.id
         else:
-            entity_id = create_entity(conn, "Employee", attrs)
-        created_count += 1
+            entity_id = create_entity(conn, "Employee", {**attrs, "status": "pending"})
+            created_count += 1
 
         employee_id = attrs.get("employee_id")
         hire_date_str = attrs.get("hire_date")

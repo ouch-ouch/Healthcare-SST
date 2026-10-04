@@ -15,6 +15,13 @@ def test_ingest_creates_license_entities(conn):
     assert lic.attrs["license_type"] == "RN"
 
 
+def test_reingesting_same_file_reports_zero_created(conn):
+    """Re-ingesting rows that already exist must not count as newly created."""
+    ingest_licenses(conn, "tests/fixtures/licenses.csv")
+    result = ingest_licenses(conn, "tests/fixtures/licenses.csv")
+    assert result.created == 0
+
+
 def test_expiration_in_past_flagged(conn):
     """Test that expiration_date in the past is flagged as data_source_anomaly."""
     ingest_licenses(conn, "tests/fixtures/licenses_past_expiration.csv")

@@ -2,7 +2,7 @@
 
 import pytest
 from sot.adapters.hr import ingest_hr_roster
-from sot.graph import find_entity
+from sot.graph import find_entity, update_entity_attrs
 from sot.flags import open_flags_grouped_by_entity
 
 
@@ -21,6 +21,25 @@ def test_employee_starts_pending(conn):
     e = find_entity(conn, "Employee", employee_id="E201")
     assert e is not None
     assert e.attrs["status"] == "pending"
+
+
+def test_reingest_does_not_reset_status_already_set_by_gate_rule(conn):
+    """Re-ingesting an existing employee must not clobber a status a gate rule already set."""
+    ingest_hr_roster(conn, "tests/fixtures/hr_roster.csv")
+    e = find_entity(conn, "Employee", employee_id="E201")
+    update_entity_attrs(conn, e.id, {"status": "blocked"})  # simulate a prior gate rule
+
+    ingest_hr_roster(conn, "tests/fixtures/hr_roster.csv")  # re-ingest same row
+
+    e = find_entity(conn, "Employee", employee_id="E201")
+    assert e.attrs["status"] == "blocked"
+
+
+def test_reingesting_same_file_reports_zero_created(conn):
+    """Re-ingesting rows that already exist must not count as newly created."""
+    ingest_hr_roster(conn, "tests/fixtures/hr_roster.csv")
+    result = ingest_hr_roster(conn, "tests/fixtures/hr_roster.csv")
+    assert result.created == 0
 
 
 def test_duplicate_employee_id_flagged_as_data_source_anomaly(conn):

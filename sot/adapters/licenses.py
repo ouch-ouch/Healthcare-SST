@@ -44,7 +44,7 @@ def ingest_licenses(conn: sqlite3.Connection, csv_path: str) -> IngestResult:
             entity_id = existing.id
         else:
             entity_id = create_entity(conn, "License", attrs)
-        created_count += 1
+            created_count += 1
 
         license_number = attrs.get("license_number")
         expiration_date_str = attrs.get("expiration_date")
