@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import pandas as pd
 
-from sot.graph import create_entity
+from sot.graph import create_entity, find_entity, update_entity_attrs
 from sot.flags import create_flag
 
 
@@ -46,8 +46,14 @@ def ingest_hr_roster(conn: sqlite3.Connection, csv_path: str) -> IngestResult:
         # Add required status field
         attrs["status"] = "pending"
 
-        # Create the entity first (even if flagged, per spec)
-        entity_id = create_entity(conn, "Employee", attrs)
+        # Create the entity first (even if flagged, per spec), unless it already
+        # exists (same employee_id re-ingested) -- then update it in place.
+        existing = find_entity(conn, "Employee", employee_id=attrs.get("employee_id"))
+        if existing is not None:
+            update_entity_attrs(conn, existing.id, attrs)
+            entity_id = existing.id
+        else:
+            entity_id = create_entity(conn, "Employee", attrs)
         created_count += 1
 
         employee_id = attrs.get("employee_id")
