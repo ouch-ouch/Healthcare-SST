@@ -38,6 +38,11 @@ No OWL/RDF/reasoner. All checks are direct comparisons between already-linked re
 - **License is the only source permitted to originate a `License` entity**, with its `license_number` enforced unique (natural key). A separate internal UUID is the entity's actual primary key — `license_number` is an external business key, not guaranteed stable as a PK.
 - **Resolution order**: HR + Licenses first (exact match: `license_number`), then Payroll (fuzzy name + facility), then Schedule (weakest signal: name only), each resolving against the entity set the prior step confirmed — not all four sources matched against each other simultaneously.
 - **Matching**: exact key match first; `rapidfuzz`, scoped to facility, for fuzzy name matching. Matches below a confidence threshold are not auto-merged — they raise an `identity ambiguity` flag.
+- **Corroboration**: at both combination stages, identity is confirmed by two *independent* signals that must agree, not one:
+  - **Combined A (HR + Licenses)**: `license_number` (HR's field vs. the registry's own) **and** name (HR `first_name`+`last_name` vs. License `name_on_license`).
+  - **Combined B (Payroll + Schedule)**, resolved against Combined A: name (Payroll's `LASTNAME, FIRSTNAME` vs. Schedule's `Firstname Lastname`, fuzzy) **and** role code (Payroll `job_code` vs. Schedule `Role` — same vocabulary, e.g. `RN`/`CNA`, so this is a direct equality check, no mapping needed).
+  - If both signals agree → confident match, no flag. If they disagree, the flag names *which* signal broke and shows both values — "license number matched but the name on the license says someone else" is a materially different, more urgent problem than "same person, name just formatted differently," and collapsing both into a generic ambiguity flag would hide that distinction.
+  - A borderline-but-passing corroboration (e.g. a fuzzy name score just above threshold) is tagged on the entity as resolution confidence, carried forward per §11.
 - **Facts that don't resolve are never dropped.** An unmatched Payroll/Schedule row is stored as a `pending`, unlinked fact. Ingestion is never blocked waiting for identity resolution; only the *linking* of a fact to a confirmed entity is conditional.
 
 ## 4. Per-file sanity checks (before any cross-source matching)
@@ -94,7 +99,7 @@ Every flag carries: entity/row references, severity, a **generated plain-languag
 | Type | Raised by | Typically resolved by |
 |---|---|---|
 | `data_source_anomaly` | per-file sanity checks (§4) | review — usually a source-system issue |
-| `identity_ambiguity` | resolver, low-confidence match | human confirms or rejects |
+| `identity_ambiguity` | resolver low-confidence match, or a corroboration mismatch (§3) — names the specific signal that disagreed, with both values | human confirms, rejects, or corrects |
 | `attribute_disagreement` | Combined A build, no precedence defined for that field | human, or a future precedence policy |
 | `referential_orphan` | Combined B fact with no match in Combined A | waits on HR, or manual link |
 | `business_rule_violation` | cross-table checks (e.g. hours mismatch) | human judgment — no single correct value exists |
@@ -109,6 +114,10 @@ A single registry of rule objects (`applies_to`, `type: gate|flag`, `check(entit
 ## 11. Conflict/review surface
 
 No message queue, no Kafka. The `flags` table (filtered on `status = 'open'`) *is* the review queue — this is batch file ingestion with a human-review loop, not a continuous multi-consumer event stream, so streaming infrastructure solves a problem this system doesn't have. A CLI (`ingest`, `flags --open`, `employee <name>`, `resolve <flag_id> <decision>`) is the human-facing surface for the hackathon; a web UI is a stretch addition only if time remains.
+
+**Review is entity-centric, not flag-centric.** `flags --open` groups every open flag by `entity_id` rather than listing rows in isolation — a reviewer looking at Sofia Reyes sees her license status, Stage 1/2 corroboration confidence, and any Stage 3 (Combined A vs. B) conflicts together, in one bundle, rather than paging through unrelated flag rows one at a time. This is a query/presentation grouping over the same `flags` table, not a new storage concept.
+
+**Resolution confidence carries forward.** A borderline-but-passing corroboration at Stage 1 or 2 (§3) is tagged on the entity. When a later Stage 3 conflict fires against that entity (e.g. an hours mismatch), the flag surfaces that upstream context alongside it — e.g. *"hours mismatch — note: this employee's payroll↔schedule identity match was borderline-confidence."* This turns "is this a data error, or did we actually combine two different people?" from a guess into a visible signal at review time.
 
 ## 12. Stack
 
