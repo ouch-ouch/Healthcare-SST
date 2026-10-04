@@ -54,11 +54,13 @@ def init_db(path: str) -> sqlite3.Connection:
             entity_id TEXT NOT NULL,
             flag_type TEXT NOT NULL,
             severity TEXT NOT NULL,
-            message TEXT NOT NULL,
-            details TEXT,
-            resolved BOOLEAN DEFAULT 0,
-            created_at TEXT NOT NULL,
+            reason TEXT,
+            detail TEXT,
+            status TEXT,
+            resolved_by TEXT,
+            resolution TEXT,
             resolved_at TEXT,
+            created_at TEXT NOT NULL,
             FOREIGN KEY (entity_id) REFERENCES entities(id)
         )
     """)
