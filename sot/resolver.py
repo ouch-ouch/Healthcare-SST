@@ -3,10 +3,17 @@
 Task 9 adds the Combined-B half of this module.
 """
 
+import json
 import sqlite3
+from typing import Literal, Optional
 
-from sot.graph import Entity, get_entity, find_entity, create_edge
+from rapidfuzz import fuzz
+
+from sot.graph import Entity, get_entity, find_entity, create_edge, update_entity_attrs, neighbors
 from sot.flags import create_flag
+from sot.facilities import normalize_facility
+
+_FUZZY_MATCH_THRESHOLD = 85
 
 
 def _normalize_name(name: str) -> set[str]:
@@ -52,3 +59,117 @@ def corroborate_combined_a(conn: sqlite3.Connection, employee_id: str, license_i
             conn, employee_id, "identity_ambiguity", "medium",
             f"name mismatch: HR name={hr_name!r} vs license name_on_license={license_name!r}"
         )
+
+
+# --- Combined B: identity resolution for Payroll/Schedule facts against Combined A ---
+
+
+def _all_employees(conn: sqlite3.Connection) -> list[Entity]:
+    """All Employee entities regardless of status (a fact can arrive before SST approval)."""
+    cursor = conn.execute("SELECT id, type, attrs FROM entities WHERE type = 'Employee'")
+    return [Entity(id=row[0], type=row[1], attrs=json.loads(row[2])) for row in cursor.fetchall()]
+
+
+def _fuzzy_key(name: str) -> str:
+    """Lowercase and strip commas so 'REYES, SOFIA' and 'Sofia Reyes' score as equal tokens."""
+    return name.replace(",", " ").lower()
+
+
+def _best_name_match(candidates: list[Entity], fact_name: str) -> Optional[Entity]:
+    fact_key = _fuzzy_key(fact_name)
+    best, best_score = None, 0
+    for emp in candidates:
+        score = fuzz.token_sort_ratio(_fuzzy_key(_hr_full_name(emp)), fact_key)
+        if score > best_score:
+            best, best_score = emp, score
+    return best if best_score >= _FUZZY_MATCH_THRESHOLD else None
+
+
+def resolve_payroll_employee(conn: sqlite3.Connection, payroll_record_id: str) -> Optional[str]:
+    """Fuzzy-match a PayrollRecord's employee_name + facility_code against Employee entities."""
+    record = get_entity(conn, payroll_record_id)
+    facility = normalize_facility(record.attrs.get("facility_code"))
+
+    candidates = [
+        emp for emp in _all_employees(conn)
+        if normalize_facility(emp.attrs.get("facility")) == facility
+    ]
+
+    match = _best_name_match(candidates, record.attrs.get("employee_name", ""))
+    return match.id if match else None
+
+
+def resolve_schedule_employee(conn: sqlite3.Connection, shift_assignment_id: str) -> Optional[str]:
+    """Fuzzy-match a ShiftAssignment's staff_name against Employee entities, scoped by facility_id."""
+    shift = get_entity(conn, shift_assignment_id)
+    facility_id = shift.attrs.get("facility_id")
+
+    if facility_id is None:
+        # The page's facility didn't resolve (held page) -- can't scope, fuzzy-match by name alone.
+        candidates = _all_employees(conn)
+    else:
+        candidates = []
+        for emp in _all_employees(conn):
+            fac_name = normalize_facility(emp.attrs.get("facility"))
+            fac = find_entity(conn, "Facility", name=fac_name) if fac_name else None
+            if fac is not None and fac.id == facility_id:
+                candidates.append(emp)
+
+    match = _best_name_match(candidates, shift.attrs.get("staff_name", ""))
+    return match.id if match else None
+
+
+def corroborate_combined_b(conn: sqlite3.Connection, employee_id: str, role_code_a: str, role_code_b: str) -> bool:
+    """Compare Payroll job_code against Schedule role; flag disagreement."""
+    if role_code_a != role_code_b:
+        create_flag(
+            conn, employee_id, "identity_ambiguity", "medium",
+            f"role_code mismatch: {role_code_a!r} vs {role_code_b!r}"
+        )
+        return False
+    return True
+
+
+_FACT_EDGE_TYPE = {
+    "PayrollRecord": "paid_for",
+    "ShiftAssignment": "worked_shift",
+}
+
+_FACT_ROLE_ATTR = {
+    "PayrollRecord": "job_code",
+    "ShiftAssignment": "role",
+}
+
+
+def attach_payroll_or_shift_fact(
+    conn: sqlite3.Connection,
+    fact_entity_id: str,
+    fact_type: Literal["PayrollRecord", "ShiftAssignment"],
+) -> None:
+    """Resolve a Payroll/Schedule fact to an Employee, link, and corroborate role codes."""
+    resolver = resolve_payroll_employee if fact_type == "PayrollRecord" else resolve_schedule_employee
+    employee_id = resolver(conn, fact_entity_id)
+
+    if employee_id is None:
+        create_flag(
+            conn, fact_entity_id, "referential_orphan", "high",
+            f"no Employee entity matched for {fact_type} id={fact_entity_id!r}"
+        )
+        return
+
+    update_entity_attrs(conn, fact_entity_id, {"employee_id": employee_id})
+    create_edge(conn, employee_id, fact_entity_id, _FACT_EDGE_TYPE[fact_type])
+
+    fact = get_entity(conn, fact_entity_id)
+    role_code = fact.attrs.get(_FACT_ROLE_ATTR[fact_type])
+
+    other_type = "ShiftAssignment" if fact_type == "PayrollRecord" else "PayrollRecord"
+    if role_code is not None:
+        for other_fact in neighbors(conn, employee_id, _FACT_EDGE_TYPE[other_type]):
+            other_role_code = other_fact.attrs.get(_FACT_ROLE_ATTR[other_type])
+            if other_role_code is not None:
+                payroll_code, schedule_code = (
+                    (role_code, other_role_code) if fact_type == "PayrollRecord"
+                    else (other_role_code, role_code)
+                )
+                corroborate_combined_b(conn, employee_id, payroll_code, schedule_code)
