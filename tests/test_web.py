@@ -71,3 +71,43 @@ def test_resolve_unknown_flag_shows_error_not_a_crash(client):
     )
     assert r.status_code == 200
     assert b"Error resolving" in r.data
+
+
+def test_graph_page_loads(client):
+    r = client.get("/graph")
+    assert r.status_code == 200
+    assert b"vis-network" in r.data
+
+
+def test_graph_data_before_any_ingest_has_only_the_seeded_facilities(client):
+    r = client.get("/graph-data")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["edges"] == []
+    assert len(data["nodes"]) == 2  # the two Facility entities init_db always seeds
+    assert all(n["group"] == "Facility" for n in data["nodes"])
+
+
+def test_graph_data_reflects_ingested_entities_edges_and_flags(client):
+    with open("tests/fixtures/hr_roster.csv", "rb") as hr, \
+         open("tests/fixtures/licenses.csv", "rb") as lic:
+        client.post(
+            "/ingest",
+            data={"files": [(hr, "hr_roster.csv"), (lic, "licenses.csv")]},
+            content_type="multipart/form-data",
+        )
+
+    data = client.get("/graph-data").get_json()
+
+    employee_nodes = [n for n in data["nodes"] if n["group"] == "Employee"]
+    license_nodes = [n for n in data["nodes"] if n["group"] == "License"]
+    assert len(employee_nodes) == 2
+    assert len(license_nodes) == 2
+
+    holds_license_edges = [e for e in data["edges"] if e["type"] == "holds_license"]
+    assert len(holds_license_edges) == 2  # both employees' licenses linked cleanly
+
+    # the two Facility entities seeded at init_db show up too, with no flags
+    facility_nodes = [n for n in data["nodes"] if n["group"] == "Facility"]
+    assert len(facility_nodes) == 2
+    assert all(not n["flagged"] for n in facility_nodes)
