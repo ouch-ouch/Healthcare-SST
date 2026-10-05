@@ -65,15 +65,99 @@ python3 -m venv .venv
 .venv/bin/python -m pytest -q
 ```
 
-## Architecture, in one paragraph
+## Architecture
 
-Four source adapters parse HR/Licenses/Payroll CSVs and the Schedule PDF
-into a SQLite-backed entity/edge graph. A resolver links them by identity
-(exact keys first, then fuzzy name matching with two-signal corroboration),
-enforcing that only HR can originate a new employee and only the license
-registry can originate a new license. A small gate/flag rule engine
-validates the result — license expiration, role/license agreement, payroll
-vs. schedule hours — and every violation becomes a flag with a
-plain-language reason, grouped by entity for review. Nothing is ever
-silently dropped or overwritten; ingestion always proceeds, linking is what
-gets gated.
+Four source files, two pairs. **HR + Licenses** combine into **Combined A**
+(the authoritative roster: who's employed, what license they hold, whether
+that license is currently valid). **Payroll + Schedule** combine into
+**Combined B** (what they were actually paid and actually scheduled for),
+which is then cross-checked against Combined A. Every disagreement anywhere
+in this pipeline becomes a flag — grouped by entity, never silently dropped.
+
+```
+ 1. HR roster (CSV)                3. Licenses (CSV)
+ origin of Employee                origin of License
+ (only source that can             (only source that can
+  create a new employee)            create a new license)
+        │                                  │
+        └────────────────┬─────────────────┘
+                          ▼
+              ┌───────────────────────┐
+              │      COMBINED A       │   resolver.attach_license
+              │   (HR + Licenses)     │   + combiner.build_combined_a
+              └───────────────────────┘
+                          │
+          • exact match on license_number
+          • corroborate: HR name  vs  License's name_on_license
+          • precedence: soonest(HR expiration, License expiration) wins
+          • canonical display_name = HR's name, always
+                          │
+                          ▼
+              ┌───────────────────────┐
+              │   GATE / FLAG RULES   │   combiner.COMBINED_A_RULES
+              └───────────────────────┘
+          • license_needs_check   (gate)  → Employee.status:
+                                             pending / active / blocked
+          • role_matches_license  (flag)  → job_title vs. license_type
+          • license_staleness     (flag)  → last_verified too old
+                          │
+                          ▼
+            Employee.status, Employee.resolved_expiration
+                          │
+                          │  (read by Combined B below)
+                          ▼
+ 2. Payroll (CSV)                  4. Staff Schedule (PDF)
+ attaches to an Employee           attaches to an Employee
+ (never originates one)            (never originates one;
+                                     one PDF page = one facility)
+        │                                  │
+        └────────────────┬─────────────────┘
+                          ▼
+              ┌───────────────────────┐
+              │      COMBINED B       │   resolver.attach_payroll_or_shift_fact
+              │  (Payroll + Schedule) │
+              └───────────────────────┘
+                          │
+          • fuzzy name match, scoped by facility, against Combined A's employees
+          • corroborate: Payroll job_code  vs  Schedule Role
+                          │
+                          ▼
+              ┌───────────────────────┐
+              │  CROSS-VALIDATION vs. │   combiner.build_combined_b
+              │     COMBINED A        │
+              └───────────────────────┘
+          • facility agreement (HR facility vs. payroll/schedule facility)
+          • hours check: hours_paid  vs.  sum(ShiftAssignment.hours_by_day)
+          • payroll_status:
+              approved                         (license covers the whole period)
+              held                             (license expired before the period)
+              held + partial_period_license_lapse  (license expired mid-period)
+                          │
+                          ▼
+              ┌───────────────────────┐
+              │      flags table      │   one row per issue, grouped by
+              │   (the review queue)  │   entity, plain-language reason
+              └───────────────────────┘
+                          ▲
+                          │
+          cascade_from_employee: when Combined A changes for someone
+          (e.g. a license gets renewed), their already-linked Combined B
+          facts are automatically re-checked — a renewal can clear a
+          `held` payroll record without a new file being ingested.
+```
+
+**How it actually runs:** every call to `ingest()` (CLI or web UI) does one
+adapter pass, then a full idempotent rescan — link whatever can now be
+linked, rebuild Combined A for every employee, rebuild Combined B for every
+linked fact. Order of file upload never matters; an employee without a
+license yet just stays unlinked (flagged, never dropped) until the Licenses
+file shows up, at which point the next ingest call's rescan picks it up
+automatically.
+
+**Why two combined tables instead of one big join:** HR+Licenses answer "is
+this person valid to work" — a question about the person. Payroll+Schedule
+answer "does what they were paid match what they actually did" — a question
+about a specific pay period. Keeping them separate is what makes the
+mid-period-license-lapse case expressible: an employee can be correctly
+`blocked` as of a date while a specific payroll record for an earlier,
+still-valid period stays `approved`.
