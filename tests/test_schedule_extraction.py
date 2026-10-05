@@ -51,6 +51,21 @@ def test_reingesting_same_schedule_page_does_not_duplicate(conn):
     assert len(staff_names) == len(set(staff_names))
 
 
+def test_reingesting_does_not_duplicate_when_first_day_cell_is_blank(conn):
+    """Residual fix: dedup must key on (staff_name, facility), not on the first
+    day column's value — a blank/None first cell (pdfplumber's blank-cell case)
+    previously caused the dedup lookup to miss the existing entity."""
+    page = PageTable(
+        facility_name="Harborview Bayside",
+        rows=[{"Staff": "Ann Lee", "Role": "RN", "Mon 09/14": None, "Tue 09/15": "7a-3p"}],
+        raw_text="",
+    )
+    store_schedule_batch(conn, page)
+    store_schedule_batch(conn, page)  # same page, fed twice
+    shifts = all_entities_of_type(conn, "ShiftAssignment")
+    assert len(shifts) == 1
+
+
 def test_empty_page_rows_raises_data_source_anomaly_flag(conn):
     """I6: a page whose table failed to extract (empty rows) must not silently drop data."""
     page = PageTable(facility_name="Harborview Bayside", rows=[], raw_text="")

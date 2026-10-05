@@ -173,13 +173,14 @@ def store_schedule_batch(conn: sqlite3.Connection, page: PageTable) -> None:
     for i, row in enumerate(page.rows):
         shifts = {k: v for k, v in row.items() if k not in ("Staff", "Role", "hours_by_day")}
         hours_by_day = row.get("hours_by_day", {})
-        day_key = next(iter(shifts), None)
 
-        existing = None
-        for candidate in _existing_shift_candidates(conn, facility_id, page.facility_name, row.get("Staff")):
-            if day_key is not None and candidate.attrs.get("shifts", {}).get(day_key) is not None:
-                existing = candidate
-                break
+        # Dedup on (staff_name, facility) alone — _existing_shift_candidates already
+        # scopes to this facility/staff, so a blank first-day cell (pdfplumber's
+        # blank-cell case) must not prevent the match.
+        existing = next(
+            iter(_existing_shift_candidates(conn, facility_id, page.facility_name, row.get("Staff"))),
+            None,
+        )
 
         attrs = {
             "staff_name": row["Staff"],
