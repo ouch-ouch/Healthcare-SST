@@ -1,6 +1,6 @@
 import pytest
 from sot.graph import create_entity, get_entity
-from sot.flags import create_flag, open_flags_grouped_by_entity, resolve_flag
+from sot.flags import create_flag, open_flags_grouped_by_entity, resolve_flag, auto_resolve_open_flags
 
 
 def test_create_flag_and_group_by_entity(conn):
@@ -47,3 +47,25 @@ def test_resolve_flag_is_additive_not_overwrite(conn):
     from sot.flags import get_all_flags_for_entity
     all_flags = get_all_flags_for_entity(conn, eid)
     assert all_flags[0].resolution == "confirmed same person"
+
+
+def test_auto_resolve_open_flags_closes_all_matching_open_flags(conn):
+    """Stale-flag fix: once an entity's underlying condition clears (e.g. a license
+    link succeeds after an earlier referential_orphan flag), the old flag must be
+    auto-closed rather than sitting open forever."""
+    eid = create_entity(conn, "Employee", {})
+    create_flag(conn, eid, "referential_orphan", "high", "no License entity found for license_number='X'")
+    auto_resolve_open_flags(conn, eid, "referential_orphan", resolution="license linked on rescan")
+    grouped = open_flags_grouped_by_entity(conn)
+    assert eid not in grouped
+    from sot.flags import get_all_flags_for_entity
+    all_flags = get_all_flags_for_entity(conn, eid)
+    assert all_flags[0].status == "resolved"
+    assert all_flags[0].resolved_by == "system"
+    assert all_flags[0].resolution == "license linked on rescan"
+
+
+def test_auto_resolve_open_flags_is_a_noop_when_nothing_open(conn):
+    """Must not raise when there's nothing to resolve -- called unconditionally on every success."""
+    eid = create_entity(conn, "Employee", {})
+    auto_resolve_open_flags(conn, eid, "referential_orphan", resolution="n/a")  # no error

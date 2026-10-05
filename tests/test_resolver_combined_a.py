@@ -33,6 +33,24 @@ def test_attach_license_rescan_does_not_duplicate_orphan_flag(conn):
     assert len(orphan_flags) == 1
 
 
+def test_attach_license_auto_resolves_stale_orphan_flag_once_license_appears(conn):
+    """Stale-flag fix: a referential_orphan from before the License existed must
+    auto-close once a matching License shows up and the edge is created."""
+    emp = create_entity(conn, "Employee", {"first_name": "Sofia", "last_name": "Reyes",
+                                            "license_number": "RN-551203"})
+    attach_license(conn, emp)  # fails: no License yet
+    grouped = open_flags_grouped_by_entity(conn)
+    assert grouped[emp][0].flag_type == "referential_orphan"
+
+    create_entity(conn, "License", {"license_number": "RN-551203", "name_on_license": "REYES, SOFIA",
+                                     "expiration_date": "2027-05-31", "license_type": "RN"})
+    attach_license(conn, emp)  # rescan: now succeeds
+
+    assert len(neighbors(conn, emp, "holds_license")) == 1
+    grouped = open_flags_grouped_by_entity(conn)
+    assert emp not in grouped  # the earlier orphan flag is no longer open
+
+
 def test_corroboration_name_mismatch_flags_identity_ambiguity(conn):
     emp = create_entity(conn, "Employee", {"first_name": "Sofia", "last_name": "Reyes",
                                             "license_number": "RN-551203"})

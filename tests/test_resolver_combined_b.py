@@ -67,6 +67,23 @@ def test_attach_payroll_fact_rescan_does_not_duplicate_orphan_flag(conn):
     assert len(orphan_flags) == 1
 
 
+def test_attach_payroll_fact_auto_resolves_stale_orphan_flag_once_employee_appears(conn):
+    """Stale-flag fix: a referential_orphan from before the Employee existed must
+    auto-close once a matching Employee shows up and the fact links."""
+    pr = create_entity(conn, "PayrollRecord", {"employee_name": "REYES, SOFIA", "facility_code": "BYS"})
+    attach_payroll_or_shift_fact(conn, pr, "PayrollRecord")  # fails: no Employee yet
+    grouped = open_flags_grouped_by_entity(conn)
+    assert grouped[pr][0].flag_type == "referential_orphan"
+
+    create_entity(conn, "Employee", {"first_name": "Sofia", "last_name": "Reyes",
+                                      "facility": "Harborview Bayside", "status": "active"})
+    attach_payroll_or_shift_fact(conn, pr, "PayrollRecord")  # rescan: now succeeds
+
+    assert get_entity(conn, pr).attrs.get("employee_id") is not None
+    grouped = open_flags_grouped_by_entity(conn)
+    assert pr not in grouped
+
+
 def test_attach_payroll_fact_links_employee_on_match(conn):
     emp = create_entity(conn, "Employee", {"first_name": "Sofia", "last_name": "Reyes",
                                             "facility": "Harborview Bayside", "status": "active"})

@@ -1,6 +1,6 @@
 """Tests for Schedule PDF adapter."""
 
-from sot.adapters.schedule import extract_pages, store_schedule_batch, annotate_daily_hours, PageTable
+from sot.adapters.schedule import extract_pages, store_schedule_batch, annotate_daily_hours, PageTable, _match_facility_name
 from tests.conftest import all_entities_of_type
 from sot.flags import open_flags_grouped_by_entity
 
@@ -19,6 +19,18 @@ def test_unresolvable_facility_holds_batch(conn):
     grouped = open_flags_grouped_by_entity(conn)
     anomaly_flags = [f for fs in grouped.values() for f in fs if f.flag_type == "data_source_anomaly"]
     assert len(anomaly_flags) == 1  # one flag for the whole page, not per row
+
+
+def test_match_facility_name_handles_real_world_header_variants():
+    """Residual fix: real schedule exports don't always repeat the literal
+    "Harborview Bayside"/"Harborview Riverdale" text -- e.g. "Harborview Care
+    Group: Bayside SNF" only has the distinctive token, not the full phrase."""
+    assert _match_facility_name("Harborview Bayside\nWeek of 9/14") == "Harborview Bayside"
+    assert _match_facility_name("Harborview Care Group: Bayside SNF") == "Harborview Bayside"
+    assert _match_facility_name("Harborview Care Group: Riverdale Rehab") == "Harborview Riverdale"
+    assert _match_facility_name("Unit 7 Nursing Schedule") is None
+    # A short/generic fragment must not false-match a distinctive token mid-word.
+    assert _match_facility_name("seaside cafe menu") is None
 
 
 def test_known_facility_links_batch(conn):

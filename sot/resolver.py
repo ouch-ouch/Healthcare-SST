@@ -10,7 +10,7 @@ from typing import Literal, Optional
 from rapidfuzz import fuzz
 
 from sot.graph import Entity, get_entity, find_entity, create_edge, update_entity_attrs, neighbors, remove_edge
-from sot.flags import create_flag
+from sot.flags import create_flag, auto_resolve_open_flags
 from sot.facilities import normalize_facility
 
 _FUZZY_MATCH_THRESHOLD = 85
@@ -43,6 +43,7 @@ def attach_license(conn: sqlite3.Connection, employee_id: str) -> None:
         return
 
     create_edge(conn, employee_id, lic.id, "holds_license")
+    auto_resolve_open_flags(conn, employee_id, "referential_orphan", resolution="license linked on rescan")
     corroborate_combined_a(conn, employee_id, lic.id)
 
 
@@ -185,6 +186,7 @@ def attach_payroll_or_shift_fact(
 
     update_entity_attrs(conn, fact_entity_id, {"employee_id": employee_id})
     create_edge(conn, employee_id, fact_entity_id, _FACT_EDGE_TYPE[fact_type])
+    auto_resolve_open_flags(conn, fact_entity_id, "referential_orphan", resolution="employee matched on rescan")
 
     fact = get_entity(conn, fact_entity_id)
     role_code = fact.attrs.get(_FACT_ROLE_ATTR[fact_type])

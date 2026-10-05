@@ -146,6 +146,32 @@ def resolve_flag(
         raise ValueError(f"No flag found with id {flag_id!r}")
 
 
+def auto_resolve_open_flags(
+    conn: sqlite3.Connection,
+    entity_id: str,
+    flag_type: str,
+    resolution: str
+) -> None:
+    """
+    Auto-close every open flag of flag_type on entity_id, resolved_by="system".
+
+    Call this whenever a prior failure condition (e.g. a referential_orphan for a
+    license/employee that couldn't be matched) has since resolved itself on a later
+    rescan -- without this, a flag from an earlier, now-stale attempt sits open
+    forever even once the underlying data links up correctly. A no-op if nothing
+    is open.
+    """
+    now = _now()
+    conn.execute(
+        """
+        UPDATE flags SET status = 'resolved', resolved_by = 'system', resolution = ?, resolved_at = ?
+        WHERE entity_id = ? AND flag_type = ? AND status = 'open'
+        """,
+        (resolution, now, entity_id, flag_type)
+    )
+    conn.commit()
+
+
 def get_all_flags_for_entity(conn: sqlite3.Connection, entity_id: str) -> list[Flag]:
     """
     Get all flags (open and resolved) for an entity.

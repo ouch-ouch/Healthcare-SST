@@ -1,6 +1,7 @@
 """Schedule PDF adapter: extracts per-page staff/day tables and resolves facility."""
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass, field
 
@@ -23,14 +24,30 @@ class PageTable:
 # the fixed, pre-seeded pair from init_db (Task 1) — if that set ever grows or
 # becomes dynamic, this needs a conn-aware lookup instead.
 _KNOWN_FACILITY_NAMES = ("Harborview Bayside", "Harborview Riverdale")
+_DISTINCTIVE_TOKEN = {name: name.split()[-1] for name in _KNOWN_FACILITY_NAMES}
 
 
 def _match_facility_name(text: str) -> str | None:
-    """Return the known Facility name found anywhere in text (case-insensitive), else None."""
+    """Return the known Facility name found anywhere in text (case-insensitive), else None.
+
+    Real schedule exports don't always repeat the full "Harborview Bayside" phrase
+    (e.g. "Harborview Care Group: Bayside SNF") -- fall back to the facility's
+    distinctive last word alone, word-boundary matched so a short/generic
+    substring ("seaside") can't false-match, and only when exactly one facility's
+    token appears (an unqualified match on both would be genuinely ambiguous).
+    """
     lowered = text.lower()
     for name in _KNOWN_FACILITY_NAMES:
         if name.lower() in lowered:
             return name
+
+    matches = {
+        name for name, token in _DISTINCTIVE_TOKEN.items()
+        if re.search(rf"\b{re.escape(token.lower())}\b", lowered)
+    }
+    if len(matches) == 1:
+        return matches.pop()
+
     return None
 
 
