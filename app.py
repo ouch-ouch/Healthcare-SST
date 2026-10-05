@@ -36,7 +36,7 @@ PAGE = """
   input[type=text] { flex: 1; min-width: 180px; padding: .5rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 6px; }
   button { padding: .5rem 1rem; font-size: 1rem; border: 0; border-radius: 6px; background: #1f6f5c; color: white; cursor: pointer; }
   button:hover { background: #185a4a; }
-  .message { background: #eef7f1; border: 1px solid #bfe3cf; padding: .6rem 1rem; border-radius: 6px; margin-top: .75rem; }
+  .message { background: #eef7f1; border: 1px solid #bfe3cf; padding: .6rem 1rem; border-radius: 6px; margin-top: .75rem; white-space: pre-wrap; }
 </style>
 </head>
 <body>
@@ -45,11 +45,12 @@ PAGE = """
 <p class="sub">Ingest the four source files, review what got flagged, resolve what's confirmed.</p>
 
 <div class="card">
-  <h2>1. Ingest a file</h2>
+  <h2>1. Ingest files</h2>
   <form method="post" action="/ingest" enctype="multipart/form-data">
-    <input type="file" name="file" required>
+    <input type="file" name="files" multiple required>
     <button type="submit">Ingest</button>
   </form>
+  <p class="sub">Select or drag all four files at once (or any subset) -- order doesn't matter.</p>
   {% if message %}<div class="message">{{ message }}</div>{% endif %}
 </div>
 
@@ -100,17 +101,20 @@ def index():
 
 @app.route("/ingest", methods=["POST"])
 def do_ingest():
-    uploaded = request.files["file"]
-    path = os.path.join(UPLOAD_DIR, uploaded.filename)
-    uploaded.save(path)
-
+    uploads = [f for f in request.files.getlist("files") if f.filename]
     conn = _get_conn()
-    try:
-        ingest(conn, path)
-        message = f"Ingested {uploaded.filename}"
-    except Exception as exc:  # noqa: BLE001 -- surface any adapter/resolver error to the uploader
-        message = f"Error ingesting {uploaded.filename}: {exc}"
 
+    results = []
+    for uploaded in uploads:
+        path = os.path.join(UPLOAD_DIR, uploaded.filename)
+        uploaded.save(path)
+        try:
+            ingest(conn, path)
+            results.append(f"Ingested {uploaded.filename}")
+        except Exception as exc:  # noqa: BLE001 -- surface any one file's error without stopping the rest
+            results.append(f"Error ingesting {uploaded.filename}: {exc}")
+
+    message = "\n".join(results) if results else "No files selected."
     return redirect(url_for("index", message=message))
 
 
